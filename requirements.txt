@@ -1,0 +1,101 @@
+# CUDA-12-safe Python requirements for Clutch / MakerOS
+# Recommended base: Python 3.11
+# Note: Install Isaac Sim / Isaac Lab separately using NVIDIA's official docs.
+# This file covers the Python-side app stack and pins PyTorch to the official CUDA 12.4 wheels.
+#
+# Install with:
+#   python3.11 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -U pip setuptools wheel
+#   pip install -r requirements_cuda12.txt
+
+# =========================
+# PYTORCH (CUDA 12.x)
+# =========================
+--index-url https://download.pytorch.org/whl/cu124
+torch
+torchvision
+torchaudio
+
+# Return to PyPI for the remaining packages
+--extra-index-url https://pypi.org/simple
+
+# =========================
+# CORE SCIENTIFIC / BASE
+# =========================
+numpy==1.26.4
+scipy==1.11.4
+pandas==2.2.2
+matplotlib==3.8.4
+
+# =========================
+# ISAAC LAB-ADJACENT / RL ECOSYSTEM
+# =========================
+gymnasium==0.29.1
+hydra-core==1.3.2
+omegaconf==2.3.0
+tqdm==4.66.4
+tensorboard==2.16.2
+
+# Optional RL extras
+stable-baselines3==2.3.2
+wandb==0.17.0
+
+# =========================
+# VISION / PERCEPTION
+# =========================
+opencv-python==4.9.0.80
+ultralytics==8.2.0
+Pillow==10.3.0
+scikit-image==0.22.0
+
+# =========================
+# BACKEND (FASTAPI)
+# =========================
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.1
+httpx==0.27.0
+python-multipart==0.0.9
+
+# =========================
+# ASYNC / EVENT SYSTEM
+# =========================
+redis==5.0.4
+
+# =========================
+# LLM / AGENT STACK
+# =========================
+openai>=1.0.0
+tiktoken==0.7.0
+langchain==0.2.1
+langchain-community==0.2.1
+anthropic>=0.25.0
+
+# =========================
+# GR00T / HF STACK
+# =========================
+transformers==4.41.2
+datasets==2.19.1
+accelerate==0.30.1
+
+# =========================
+# VOICE (OPTIONAL)
+# =========================
+sounddevice==0.4.7
+SpeechRecognition==3.10.4
+webrtcvad==2.0.10
+
+# =========================
+# LOGGING / UTILITIES
+# =========================
+loguru==0.7.2
+rich==13.7.1
+
+# =========================
+# DEV / TESTING
+# =========================
+pytest==8.2.0
+ipython==8.24.0
+black==24.4.2
+isort==5.13.2
