@@ -10,6 +10,12 @@ This version is focused on cleaner control:
 - per-limb trim sliders for manual calibration
 - raised robot model with fixed white support pole + human-arm ghost line
 - uses local SO101 STL assets (downloaded from SO-ARM100 simulation files)
+- safety supervisor (freeze / estop / home + confidence gating)
+- gesture macros: fist=`freeze`, open palm=`home`, pinch=`estop` (hold-based)
+- trajectory record/replay (JSON files in `web_teleop_v3/trajectories`)
+- runtime dashboard: FPS, processing latency, pose ratio, quality score, jitter
+- camera quality checks: low-light + blur warnings
+- calibration wizard steps in UI
 
 ## Run
 
@@ -38,6 +44,11 @@ http://127.0.0.1:8010
 - `motor_X trim` sliders: manually fine tune each limb until robot line-up matches your arm.
 - `Save Calibration JSON`: persist selected arm + trim sliders + neutral offsets.
 - Keep your whole arm visible for best stability.
+- `Freeze` button or fist gesture: hold current safe pose.
+- `E-Stop` button or pinch gesture: emergency stop latch.
+- `Home` button or open-palm gesture: move to home pose safely.
+- `Rec Start` / `Rec Stop`: record trajectories.
+- `Play` / `Stop Play`: replay selected trajectory.
 
 ## How To Operate (Stable)
 
@@ -64,6 +75,19 @@ If motion is still shaky, tune `config.web_demo.json`:
 2. Make sure selected arm (`left/right`) matches your actual arm.
 3. Re-run `Calibrate Neutral Pose`.
 4. Lower `pose_visibility_threshold` in config (for weak lighting/camera).
+
+## New API Endpoints (Phase Start)
+
+- `GET/POST /api/safety`
+- `GET /api/trajectory`
+- `POST /api/trajectory/start`
+- `POST /api/trajectory/stop`
+- `POST /api/trajectory/play`
+- `POST /api/trajectory/stop_playback`
+- `GET/POST /api/wizard`
+- `POST /api/voice` (starter hook)
+- `POST /api/ros2` (starter hook)
+- `POST /api/validation/run` (sim-vs-real report starter)
 
 ## Notes
 
