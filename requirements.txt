@@ -34,6 +34,10 @@ Pillow==10.3.0
 # VISION / PERCEPTION
 # ============================================================
 opencv-python==4.9.0.80
+ultralytics==8.2.0
+mediapipe==0.10.14
+vpython==7.6.5
+Pillow==10.3.0
 scikit-image==0.22.0
 ultralytics==8.3.18
 

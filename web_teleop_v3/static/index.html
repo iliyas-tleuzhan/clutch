@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clutch Web Teleop V3</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --line: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --ok: #2ea043;
+      --warn: #db6d28;
+      --blue: #2f81f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: radial-gradient(circle at top, #1a2231 0%, #0d1117 55%);
+    }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(13, 17, 23, 0.86);
+      backdrop-filter: blur(4px);
+    }
+    .title { font-size: 18px; font-weight: 600; }
+    .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .controls label { color: var(--muted); font-size: 12px; }
+    select, button {
+      background: #1f2630;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 13px;
+    }
+    button { cursor: pointer; }
+    .badge {
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+    .ok { border-color: var(--ok); color: #7ee787; }
+    .warn { border-color: var(--warn); color: #ffa657; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      padding: 12px;
+    }
+    .panel {
+      background: rgba(22, 27, 34, 0.93);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .panel h3 {
+      margin: 0;
+      font-size: 13px;
+      letter-spacing: 0.02em;
+      color: #c9d1d9;
+      border-bottom: 1px solid var(--line);
+      padding: 9px 12px;
+    }
+    #camera {
+      width: 100%;
+      display: block;
+      background: #000;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+    }
+    #viewer {
+      width: 100%;
+      height: min(60vh, 620px);
+      display: block;
+    }
+    .bottom {
+      display: grid;
+      grid-template-columns: 1.25fr 1fr;
+      gap: 12px;
+      padding: 0 12px 12px;
+    }
+    .motor-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(160px, 1fr));
+      gap: 9px;
+      padding: 10px 12px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 8px;
+      background: #11161d;
+    }
+    .name { font-size: 12px; color: var(--muted); }
+    .value { margin-top: 4px; font-size: 16px; font-weight: 700; }
+    .bar {
+      margin-top: 7px;
+      height: 6px;
+      border-radius: 999px;
+      background: #2d333b;
+      overflow: hidden;
+    }
+    .fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #238636, #3fb950);
+      transition: width 0.08s linear;
+    }
+    .trim-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(200px, 1fr));
+      gap: 8px;
+      padding: 0 12px 12px;
+    }
+    .trim-row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #10151c;
+    }
+    .trim-row input[type="range"] { width: 100%; }
+    .guide {
+      padding: 10px 12px 12px;
+    }
+    .howto {
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0f1520;
+    }
+    .howto ol {
+      margin: 6px 0 0 18px;
+      padding: 0;
+    }
+    .howto li {
+      margin: 4px 0;
+      color: #c7d2df;
+      font-size: 13px;
+    }
+    .guide-item {
+      margin: 8px 0;
+      border-left: 3px solid var(--blue);
+      background: #11161d;
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+    .guide-item strong { color: #9ecbff; }
+    .muted { font-size: 12px; color: var(--muted); }
+
+    @media (max-width: 980px) {
+      .grid, .bottom { grid-template-columns: 1fr; }
+      .motor-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+      .trim-grid { grid-template-columns: 1fr; }
+      #viewer { height: 52vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="title">Clutch V3: One-Arm Follow (Camera + 3D Twin)</div>
+    <div class="controls">
+      <label for="armSelect">Tracked Arm</label>
+      <select id="armSelect">
+        <option value="right">Right Arm</option>
+        <option value="left">Left Arm</option>
+      </select>
+      <button id="calibrateBtn">Calibrate Neutral Pose</button>
+      <button id="saveCalibBtn">Save Calibration JSON</button>
+      <span id="poseBadge" class="badge">pose:false</span>
+      <span id="handBadge" class="badge">hand:false</span>
+      <span id="statusBadge" class="badge">status:booting</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h3>Live Camera Feed (Selected Arm Overlay)</h3>
+      <img id="camera" alt="camera feed" />
+    </div>
+    <div class="panel">
+      <h3>3D Robot Twin + Human Arm Reference</h3>
+      <canvas id="viewer"></canvas>
+    </div>
+  </div>
+
+  <div class="bottom">
+    <div class="panel">
+      <h3>Motor Targets + Limb Calibration (Trim)</h3>
+      <div class="motor-grid" id="motorGrid"></div>
+      <div class="trim-grid" id="trimGrid"></div>
+    </div>
+    <div class="panel">
+      <h3>Guide: Which Body Motion Moves Which Joint</h3>
+      <div class="guide" id="guide"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script>
+    const cameraEl = document.getElementById("camera");
+    const poseBadge = document.getElementById("poseBadge");
+    const handBadge = document.getElementById("handBadge");
+    const statusBadge = document.getElementById("statusBadge");
+    const armSelect = document.getElementById("armSelect");
+    const calibrateBtn = document.getElementById("calibrateBtn");
+    const saveCalibBtn = document.getElementById("saveCalibBtn");
+    const motorGrid = document.getElementById("motorGrid");
+    const trimGrid = document.getElementById("trimGrid");
+    const guideEl = document.getElementById("guide");
+
+    const motorNames = ["Base", "Shoulder", "Elbow", "Forearm Roll", "Wrist Pitch", "Gripper"];
+    const motorRanges = [[-160,160],[-90,90],[-120,120],[-180,180],[-90,90],[0,90]];
+    let lastMotors = [0,0,0,0,0,0];
+    let trims = [0,0,0,0,0,0];
+    let humanArmWorld = null;
+
+    function setBadge(el, text, ok) {
+      el.textContent = text;
+      el.classList.toggle("ok", !!ok);
+      el.classList.toggle("warn", !ok);
+    }
+
+    function buildMotorCards() {
+      for (let i = 0; i < 6; i++) {
+        const c = document.createElement("div");
+        c.className = "card";
+        c.innerHTML = `
+          <div class="name">motor_${i+1} (${motorNames[i]})</div>
+          <div class="value" id="mval${i}">0.0 deg</div>
+          <div class="bar"><div class="fill" id="mfill${i}"></div></div>
+        `;
+        motorGrid.appendChild(c);
+      }
+    }
+
+    function buildTrimSliders() {
+      for (let i = 0; i < 6; i++) {
+        const row = document.createElement("div");
+        row.className = "trim-row";
+        row.innerHTML = `
+          <div class="name">motor_${i+1} trim (${motorNames[i]})</div>
+          <div class="value" id="tval${i}">0.0 deg</div>
+          <input id="tslider${i}" type="range" min="-45" max="45" step="0.1" value="0">
+        `;
+        trimGrid.appendChild(row);
+      }
+      for (let i = 0; i < 6; i++) {
+        const s = document.getElementById(`tslider${i}`);
+        s.addEventListener("input", () => {
+          trims[i] = parseFloat(s.value);
+          document.getElementById(`tval${i}`).textContent = `${trims[i].toFixed(1)} deg`;
+          scheduleTrimPush();
+        });
+      }
+    }
+
+    function updateMotorCards(m) {
+      for (let i = 0; i < 6; i++) {
+        const valEl = document.getElementById(`mval${i}`);
+        const fillEl = document.getElementById(`mfill${i}`);
+        valEl.textContent = `${m[i].toFixed(1)} deg`;
+        const [lo, hi] = motorRanges[i];
+        const pct = Math.max(0, Math.min(1, (m[i]-lo)/(hi-lo)));
+        fillEl.style.width = `${(pct*100).toFixed(1)}%`;
+      }
+    }
+
+    function renderGuide(guide) {
+      guideEl.innerHTML = "";
+      const howto = document.createElement("div");
+      howto.className = "howto";
+      howto.innerHTML = `
+        <strong>How To Operate (Stable Mode)</strong>
+        <ol>
+          <li>Stand 1-1.5m from camera with your selected arm fully visible.</li>
+          <li>Select <em>Tracked Arm</em> (left/right) matching your actual arm.</li>
+          <li>Hold a neutral pose for 2 seconds, then click <em>Calibrate Neutral Pose</em>.</li>
+          <li>Move slowly first; avoid fast jerks to keep tracking locked.</li>
+          <li>Use trim sliders until robot limb directions align to your arm.</li>
+          <li>Click <em>Save Calibration JSON</em> to keep settings for next run.</li>
+        </ol>
+      `;
+      guideEl.appendChild(howto);
+      (guide || []).forEach((g) => {
+        const div = document.createElement("div");
+        div.className = "guide-item";
+        div.innerHTML = `<strong>${g.motor} - ${g.name}</strong><div class="muted">${g.how}</div>`;
+        guideEl.appendChild(div);
+      });
+    }
+
+    let trimTimer = null;
+    function scheduleTrimPush() {
+      if (trimTimer) clearTimeout(trimTimer);
+      trimTimer = setTimeout(async () => {
+        try {
+          await fetch("/api/trims", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trims_deg: trims }),
+          });
+        } catch (e) {
+          console.error(e);
+        }
+      }, 120);
+    }
+
+    armSelect.addEventListener("change", async () => {
+      try {
+        await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ selected_arm: armSelect.value }),
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    calibrateBtn.addEventListener("click", async () => {
+      try {
+        await fetch("/api/calibrate", { method: "POST" });
+        calibrateBtn.textContent = "Calibrating...";
+        setTimeout(() => (calibrateBtn.textContent = "Calibrate Neutral Pose"), 1200);
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    saveCalibBtn.addEventListener("click", async () => {
+      try {
+        const r = await fetch("/api/calibration/save", { method: "POST" });
+        const data = await r.json();
+        if (data.ok) {
+          saveCalibBtn.textContent = "Saved JSON";
+          setTimeout(() => (saveCalibBtn.textContent = "Save Calibration JSON"), 1200);
+        } else {
+          saveCalibBtn.textContent = "Save Failed";
+          setTimeout(() => (saveCalibBtn.textContent = "Save Calibration JSON"), 1200);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    async function initSettings() {
+      try {
+        const r = await fetch("/api/settings");
+        const s = await r.json();
+        if (s.selected_arm) armSelect.value = s.selected_arm;
+        if (Array.isArray(s.trims_deg) && s.trims_deg.length === 6) {
+          trims = s.trims_deg.map(Number);
+          for (let i = 0; i < 6; i++) {
+            const sl = document.getElementById(`tslider${i}`);
+            sl.value = trims[i];
+            document.getElementById(`tval${i}`).textContent = `${trims[i].toFixed(1)} deg`;
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    const wsProto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${wsProto}://${location.host}/ws`);
+    ws.onmessage = (ev) => {
+      const data = JSON.parse(ev.data);
+      if (data.frame_b64) cameraEl.src = `data:image/jpeg;base64,${data.frame_b64}`;
+      if (Array.isArray(data.motors_deg) && data.motors_deg.length === 6) {
+        lastMotors = data.motors_deg.map(Number);
+        updateMotorCards(lastMotors);
+      }
+      humanArmWorld = Array.isArray(data.human_arm_world) ? data.human_arm_world : null;
+      if (data.selected_arm && armSelect.value !== data.selected_arm) armSelect.value = data.selected_arm;
+      setBadge(poseBadge, `pose:${!!data.pose_detected}`, !!data.pose_detected);
+      setBadge(handBadge, `hand:${!!data.hand_detected}`, !!data.hand_detected);
+      statusBadge.textContent = `status:${data.status || "unknown"}`;
+      if (Array.isArray(data.guide) && guideEl.children.length === 0) renderGuide(data.guide);
+    };
+    ws.onclose = () => setBadge(statusBadge, "status:disconnected", false);
+
+    // ===== Three.js Scene =====
+    const canvas = document.getElementById("viewer");
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0f14);
+
+    const cam3 = new THREE.PerspectiveCamera(52, 1, 0.01, 30);
+    cam3.position.set(2.0, 1.6, 2.2);
+    cam3.lookAt(0, 0.6, 0);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x1b2a3f, 0.95));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.85);
+    dl.position.set(2.5, 3.0, 1.8);
+    scene.add(dl);
+
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(4.5, 4.5),
+      new THREE.MeshStandardMaterial({ color: 0x1c2633, roughness: 0.9, metalness: 0.0 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = 0;
+    scene.add(floor);
+
+    const axis = new THREE.AxesHelper(0.45);
+    axis.position.y = 0.02;
+    scene.add(axis);
+
+    // Fixed white support pole (non-moving)
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.035, 0.035, 0.66, 28),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, metalness: 0.1 })
+    );
+    pole.position.set(0, 0.33, 0);
+    scene.add(pole);
+
+    const base = new THREE.Group();
+    base.position.set(0, 0.66, 0);
+    scene.add(base);
+
+    const jointAxis = ["y", "z", "z", "x", "z", "x"];
+    const baseLens = [0.1, 0.18, 0.19, 0.10, 0.08, 0.05];
+    const currentLens = [...baseLens];
+    const linkMeshes = [];
+    const nextGroups = [];
+    const joints = [];
+    const linkMaterial = new THREE.MeshStandardMaterial({ color: 0x4da3ff, roughness: 0.4, metalness: 0.25 });
+    const jointMaterial = new THREE.MeshStandardMaterial({ color: 0xd8e6ff, roughness: 0.35, metalness: 0.15 });
+
+    let parent = base;
+    for (let i = 0; i < 6; i++) {
+      const joint = new THREE.Group();
+      parent.add(joint);
+
+      const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 16), jointMaterial);
+      joint.add(sphere);
+
+      const link = new THREE.Mesh(new THREE.BoxGeometry(baseLens[i], 0.07, 0.07), linkMaterial);
+      link.position.x = baseLens[i] * 0.5;
+      joint.add(link);
+
+      const next = new THREE.Group();
+      next.position.x = baseLens[i];
+      joint.add(next);
+
+      joints.push({ joint, axis: jointAxis[i] });
+      linkMeshes.push(link);
+      nextGroups.push(next);
+      parent = next;
+    }
+
+    const gripL = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.016, 0.03), new THREE.MeshStandardMaterial({ color: 0xffc857 }));
+    const gripR = gripL.clone();
+    gripL.position.set(0.085, 0.03, 0);
+    gripR.position.set(0.085, -0.03, 0);
+    parent.add(gripL);
+    parent.add(gripR);
+
+    // ===== SO101 STL model loading (local assets) =====
+    let jawMesh = null;
+    const modelScale = 1.65;
+    const printedMat = new THREE.MeshStandardMaterial({ color: 0xffd24d, roughness: 0.48, metalness: 0.08 });
+    const servoMat = new THREE.MeshStandardMaterial({ color: 0x2f3440, roughness: 0.36, metalness: 0.2 });
+
+    function parseSTL(arrayBuffer) {
+      const dv = new DataView(arrayBuffer);
+      if (dv.byteLength < 84) return null;
+      const faceCount = dv.getUint32(80, true);
+      const expected = 84 + faceCount * 50;
+      const isBinary = expected === dv.byteLength;
+
+      const geometry = new THREE.BufferGeometry();
+      if (isBinary) {
+        const positions = new Float32Array(faceCount * 9);
+        let p = 0;
+        let o = 84;
+        for (let f = 0; f < faceCount; f++) {
+          o += 12; // normal
+          for (let v = 0; v < 3; v++) {
+            positions[p++] = dv.getFloat32(o, true); o += 4;
+            positions[p++] = dv.getFloat32(o, true); o += 4;
+            positions[p++] = dv.getFloat32(o, true); o += 4;
+          }
+          o += 2; // attr
+        }
+        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geometry.computeVertexNormals();
+        return geometry;
+      }
+
+      const text = new TextDecoder().decode(new Uint8Array(arrayBuffer));
+      const vtx = [];
+      const re = /vertex\s+([\-+0-9.eE]+)\s+([\-+0-9.eE]+)\s+([\-+0-9.eE]+)/g;
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        vtx.push(parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3]));
+      }
+      if (vtx.length < 9) return null;
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(vtx, 3));
+      geometry.computeVertexNormals();
+      return geometry;
+    }
+
+    async function loadSTLMesh(url, material) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Failed to load ${url}`);
+      const ab = await res.arrayBuffer();
+      const geom = parseSTL(ab);
+      if (!geom) throw new Error(`Invalid STL ${url}`);
+      const mesh = new THREE.Mesh(geom, material);
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      return mesh;
+    }
+
+    function applyRPY(obj, rpy) {
+      obj.rotation.set(rpy[0], rpy[1], rpy[2], "XYZ");
+    }
+
+    async function addSo101Part(parentGroup, file, xyz, rpy, material) {
+      const mesh = await loadSTLMesh(`/assets/so101/assets/${file}`, material);
+      mesh.scale.setScalar(modelScale);
+      mesh.position.set(xyz[0], xyz[1], xyz[2]);
+      applyRPY(mesh, rpy);
+      parentGroup.add(mesh);
+      return mesh;
+    }
+
+    async function buildSo101Model() {
+      const linkBase = base;
+      const linkShoulder = joints[0].joint;
+      const linkUpper = joints[1].joint;
+      const linkLower = joints[2].joint;
+      const linkWrist = joints[3].joint;
+      const linkGripper = joints[4].joint;
+      const linkJaw = joints[5].joint;
+
+      // Base link
+      await addSo101Part(linkBase, "base_motor_holder_so101_v1.stl", [-0.0064, -0.0001, -0.0024], [1.5708, 0.0, 1.5708], printedMat);
+      await addSo101Part(linkBase, "base_so101_v2.stl", [-0.0064, 0.0, -0.0024], [1.5708, 0.0, 1.5708], printedMat);
+      await addSo101Part(linkBase, "sts3215_03a_v1.stl", [0.0263, 0.0, 0.0437], [0, 0, 0], servoMat);
+
+      // Shoulder link
+      await addSo101Part(linkShoulder, "motor_holder_so101_base_v1.stl", [-0.0676, -0.0002, 0.0158], [1.5708, -1.5708, 0], printedMat);
+      await addSo101Part(linkShoulder, "rotation_pitch_so101_v1.stl", [0.0122, 0.0, 0.0464], [-1.5708, 0, 0], printedMat);
+      await addSo101Part(linkShoulder, "sts3215_03a_v1.stl", [-0.0304, 0.0004, -0.0417], [1.5708, 1.5708, 0], servoMat);
+
+      // Upper and lower arm links
+      await addSo101Part(linkUpper, "upper_arm_so101_v1.stl", [-0.0651, 0.012, 0.0182], [3.14159, 0, 0], printedMat);
+      await addSo101Part(linkUpper, "sts3215_03a_v1.stl", [-0.1126, -0.0155, 0.0187], [3.14159, 0, -1.5708], servoMat);
+      await addSo101Part(linkLower, "under_arm_so101_v1.stl", [-0.0648, -0.032, 0.0182], [3.14159, 0, 0], printedMat);
+      await addSo101Part(linkLower, "motor_holder_so101_wrist_v1.stl", [-0.0648, -0.032, 0.018], [3.14159, 0, 0], printedMat);
+      await addSo101Part(linkLower, "sts3215_03a_v1.stl", [-0.1224, 0.0052, 0.0187], [3.14159, 0, 3.14159], servoMat);
+
+      // Wrist + gripper links
+      await addSo101Part(linkWrist, "wrist_roll_pitch_so101_v2.stl", [0, -0.028, 0.0181], [-1.5708, -1.5708, 0], printedMat);
+      await addSo101Part(linkWrist, "sts3215_03a_no_horn_v1.stl", [0, -0.0424, 0.0306], [1.5708, 1.5708, 0], servoMat);
+      await addSo101Part(linkGripper, "wrist_roll_follower_so101_v1.stl", [0, -0.0002, 0.001], [3.14159, 0, 0], printedMat);
+      await addSo101Part(linkGripper, "sts3215_03a_v1.stl", [0.0077, 0.0001, -0.0234], [-1.5708, 0, 0], servoMat);
+      jawMesh = await addSo101Part(linkJaw, "moving_jaw_so101_v1.stl", [0, 0, 0.0189], [0, 0, 0], printedMat);
+
+      // Hide procedural boxes once the official STL model is loaded.
+      linkMeshes.forEach((m) => (m.visible = false));
+      gripL.visible = false;
+      gripR.visible = false;
+    }
+
+    buildSo101Model().catch((e) => console.error("SO101 model load error:", e));
+
+    // Human arm ghost line in same 3D space
+    const ghostMat = new THREE.LineBasicMaterial({ color: 0xff8c42 });
+    const ghostGeom = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0,0,0), new THREE.Vector3(0.35,0,0), new THREE.Vector3(0.65,0,0)
+    ]);
+    const ghostLine = new THREE.Line(ghostGeom, ghostMat);
+    base.add(ghostLine);
+
+    function updateGhostAndScale(points) {
+      if (!Array.isArray(points) || points.length < 3) return;
+      const scale = 2.0;
+      const p0 = new THREE.Vector3(0,0,0);
+      const p1 = new THREE.Vector3(points[1][0]*scale, points[1][1]*scale, points[1][2]*scale);
+      const p2 = new THREE.Vector3(points[2][0]*scale, points[2][1]*scale, points[2][2]*scale);
+      ghostLine.geometry.setFromPoints([p0, p1, p2]);
+    }
+
+    function updateRobot(m) {
+      for (let i = 0; i < 6; i++) {
+        joints[i].joint.rotation[joints[i].axis] = THREE.MathUtils.degToRad(m[i] || 0);
+      }
+      const grip = Math.max(0, Math.min(1, (m[5] || 0) / 90));
+      const gap = 0.012 + (1 - grip) * 0.045;
+      gripL.position.y = gap;
+      gripR.position.y = -gap;
+      if (jawMesh) {
+        jawMesh.rotation.z = THREE.MathUtils.degToRad(-10 + grip * 36);
+      }
+    }
+
+    function resize() {
+      const r = canvas.getBoundingClientRect();
+      const w = Math.max(120, r.width);
+      const h = Math.max(120, r.height);
+      renderer.setSize(w, h, false);
+      cam3.aspect = w / h;
+      cam3.updateProjectionMatrix();
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      updateGhostAndScale(humanArmWorld);
+      updateRobot(lastMotors);
+      renderer.render(scene, cam3);
+    }
+    animate();
+
+    buildMotorCards();
+    buildTrimSliders();
+    initSettings();
+    fetch("/api/guide").then(r => r.json()).then(d => renderGuide(d.guide)).catch(() => {});
+  </script>
+</body>
+</html>

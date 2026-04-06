@@ -1,0 +1,76 @@
+{
+  "smooth_alpha": 0.25,
+  "motors": [
+    {
+      "id": "motor_1",
+      "min_deg": -160.0,
+      "max_deg": 160.0,
+      "home_deg": 0.0,
+      "invert": false,
+      "feature": "wrist_x",
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_2",
+      "min_deg": -90.0,
+      "max_deg": 90.0,
+      "home_deg": 0.0,
+      "invert": false,
+      "feature": "wrist_y",
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_3",
+      "min_deg": -120.0,
+      "max_deg": 120.0,
+      "home_deg": 0.0,
+      "invert": false,
+      "feature": "wrist_z_proxy",
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_4",
+      "min_deg": -180.0,
+      "max_deg": 180.0,
+      "home_deg": 0.0,
+      "invert": false,
+      "feature": "palm_roll",
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_5",
+      "min_deg": -90.0,
+      "max_deg": 90.0,
+      "home_deg": 0.0,
+      "invert": false,
+      "feature": "wrist_pitch_proxy",
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_6",
+      "min_deg": 0.0,
+      "max_deg": 90.0,
+      "home_deg": 5.0,
+      "invert": false,
+      "feature": "gripper_from_finger_flex",
+      "gain": 1.0,
+      "offset": 0.0
+    }
+  ],
+  "motor_limits_deg": [
+    [-160.0, 160.0],
+    [-90.0, 90.0],
+    [-120.0, 120.0],
+    [-180.0, 180.0],
+    [-90.0, 90.0],
+    [0.0, 90.0]
+  ],
+  "digital_twin": {
+    "link_lengths_m": [0.1, 0.12, 0.1, 0.08, 0.06, 0.05]
+  }
+}
