@@ -183,8 +183,18 @@
       </select>
       <button id="calibrateBtn">Calibrate Neutral Pose</button>
       <button id="saveCalibBtn">Save Calibration JSON</button>
+      <button id="freezeBtn">Freeze</button>
+      <button id="estopBtn">E-Stop</button>
+      <button id="homeBtn">Home</button>
+      <button id="recStartBtn">Rec Start</button>
+      <button id="recStopBtn">Rec Stop</button>
+      <select id="trajSelect"></select>
+      <button id="playBtn">Play</button>
+      <button id="stopPlayBtn">Stop Play</button>
       <span id="poseBadge" class="badge">pose:false</span>
       <span id="handBadge" class="badge">hand:false</span>
+      <span id="freezeBadge" class="badge">freeze:false</span>
+      <span id="estopBadge" class="badge">estop:false</span>
       <span id="statusBadge" class="badge">status:booting</span>
     </div>
   </div>
@@ -209,6 +219,8 @@
     <div class="panel">
       <h3>Guide: Which Body Motion Moves Which Joint</h3>
       <div class="guide" id="guide"></div>
+      <div class="guide" id="wizardBox"></div>
+      <div class="guide" id="metricsBox"></div>
     </div>
   </div>
 
@@ -217,19 +229,32 @@
     const cameraEl = document.getElementById("camera");
     const poseBadge = document.getElementById("poseBadge");
     const handBadge = document.getElementById("handBadge");
+    const freezeBadge = document.getElementById("freezeBadge");
+    const estopBadge = document.getElementById("estopBadge");
     const statusBadge = document.getElementById("statusBadge");
     const armSelect = document.getElementById("armSelect");
     const calibrateBtn = document.getElementById("calibrateBtn");
     const saveCalibBtn = document.getElementById("saveCalibBtn");
+    const freezeBtn = document.getElementById("freezeBtn");
+    const estopBtn = document.getElementById("estopBtn");
+    const homeBtn = document.getElementById("homeBtn");
+    const recStartBtn = document.getElementById("recStartBtn");
+    const recStopBtn = document.getElementById("recStopBtn");
+    const playBtn = document.getElementById("playBtn");
+    const stopPlayBtn = document.getElementById("stopPlayBtn");
+    const trajSelect = document.getElementById("trajSelect");
     const motorGrid = document.getElementById("motorGrid");
     const trimGrid = document.getElementById("trimGrid");
     const guideEl = document.getElementById("guide");
+    const wizardBox = document.getElementById("wizardBox");
+    const metricsBox = document.getElementById("metricsBox");
 
     const motorNames = ["Base", "Shoulder", "Elbow", "Forearm Roll", "Wrist Pitch", "Gripper"];
     const motorRanges = [[-160,160],[-90,90],[-120,120],[-180,180],[-90,90],[0,90]];
     let lastMotors = [0,0,0,0,0,0];
     let trims = [0,0,0,0,0,0];
     let humanArmWorld = null;
+    let lastWizard = null;
 
     function setBadge(el, text, ok) {
       el.textContent = text;
@@ -306,6 +331,81 @@
       });
     }
 
+    function renderWizard(wizard) {
+      if (!wizard) return;
+      lastWizard = wizard;
+      wizardBox.innerHTML = `
+        <div class="howto">
+          <strong>Calibration Wizard</strong>
+          <div class="muted">Step ${wizard.step}/${wizard.total}</div>
+          <div style="margin-top:6px">${wizard.text}</div>
+          <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="wizPrevBtn">Prev</button>
+            <button id="wizNextBtn">Next</button>
+            <button id="wizResetBtn">Reset</button>
+          </div>
+        </div>
+      `;
+      document.getElementById("wizPrevBtn").onclick = () => setWizard("prev");
+      document.getElementById("wizNextBtn").onclick = () => setWizard("next");
+      document.getElementById("wizResetBtn").onclick = () => setWizard("reset");
+    }
+
+    function renderMetrics(metrics, quality, traj, macroEvent) {
+      metrics = metrics || {};
+      quality = quality || {};
+      traj = traj || {};
+      metricsBox.innerHTML = `
+        <div class="howto">
+          <strong>Runtime Dashboard</strong>
+          <div class="muted">fps: ${metrics.fps ?? "-"} | proc_ms: ${metrics.proc_ms_avg ?? "-"} | pose_ratio: ${metrics.pose_valid_ratio ?? "-"}</div>
+          <div class="muted">jitter_deg: ${metrics.motor_jitter_avg_deg ?? "-"} | quality: ${metrics.quality_score_avg ?? "-"}</div>
+          <div class="muted">brightness: ${quality.brightness ? quality.brightness.toFixed(1) : "-"} | blur_var: ${quality.blur_var ? quality.blur_var.toFixed(1) : "-"}</div>
+          <div class="muted">recording: ${!!traj.recording} | playing: ${!!traj.playing} (${traj.play_name || "-"})</div>
+          <div class="muted">macro: ${macroEvent || "-"}</div>
+        </div>
+      `;
+    }
+
+    async function setWizard(action) {
+      try {
+        const r = await fetch("/api/wizard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action }),
+        });
+        const d = await r.json();
+        if (d.ok) renderWizard(d.wizard);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function refreshTrajectoryList() {
+      try {
+        const r = await fetch("/api/trajectory");
+        const d = await r.json();
+        const available = (d.trajectory && d.trajectory.available) || [];
+        const current = trajSelect.value;
+        trajSelect.innerHTML = "";
+        available.forEach((n) => {
+          const op = document.createElement("option");
+          op.value = n;
+          op.textContent = n;
+          trajSelect.appendChild(op);
+        });
+        if (available.length === 0) {
+          const op = document.createElement("option");
+          op.value = "";
+          op.textContent = "(no trajectories)";
+          trajSelect.appendChild(op);
+        }
+        if (available.includes(current)) trajSelect.value = current;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
     let trimTimer = null;
     function scheduleTrimPush() {
       if (trimTimer) clearTimeout(trimTimer);
@@ -360,6 +460,60 @@
       }
     });
 
+    freezeBtn.addEventListener("click", async () => {
+      await fetch("/api/safety", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "toggle_freeze" }),
+      });
+    });
+
+    estopBtn.addEventListener("click", async () => {
+      await fetch("/api/safety", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "toggle_estop" }),
+      });
+    });
+
+    homeBtn.addEventListener("click", async () => {
+      await fetch("/api/safety", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "home" }),
+      });
+    });
+
+    recStartBtn.addEventListener("click", async () => {
+      const name = prompt("Trajectory name:", `traj_${Date.now()}`);
+      if (!name) return;
+      await fetch("/api/trajectory/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      await refreshTrajectoryList();
+    });
+
+    recStopBtn.addEventListener("click", async () => {
+      await fetch("/api/trajectory/stop", { method: "POST" });
+      await refreshTrajectoryList();
+    });
+
+    playBtn.addEventListener("click", async () => {
+      const name = trajSelect.value;
+      if (!name) return;
+      await fetch("/api/trajectory/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+    });
+
+    stopPlayBtn.addEventListener("click", async () => {
+      await fetch("/api/trajectory/stop_playback", { method: "POST" });
+    });
+
     async function initSettings() {
       try {
         const r = await fetch("/api/settings");
@@ -373,6 +527,18 @@
             document.getElementById(`tval${i}`).textContent = `${trims[i].toFixed(1)} deg`;
           }
         }
+        if (s.wizard_step && Array.isArray(s.wizard_steps)) {
+          renderWizard({
+            step: s.wizard_step,
+            total: s.wizard_steps.length,
+            text: s.wizard_steps[s.wizard_step - 1],
+          });
+        } else {
+          const wr = await fetch("/api/wizard");
+          const wd = await wr.json();
+          if (wd.ok) renderWizard(wd.wizard);
+        }
+        await refreshTrajectoryList();
       } catch (e) {
         console.error(e);
       }
@@ -391,7 +557,14 @@
       if (data.selected_arm && armSelect.value !== data.selected_arm) armSelect.value = data.selected_arm;
       setBadge(poseBadge, `pose:${!!data.pose_detected}`, !!data.pose_detected);
       setBadge(handBadge, `hand:${!!data.hand_detected}`, !!data.hand_detected);
+      setBadge(freezeBadge, `freeze:${!!(data.safety && data.safety.freeze)}`, !!(data.safety && data.safety.freeze));
+      setBadge(estopBadge, `estop:${!!(data.safety && data.safety.estop)}`, !!(data.safety && data.safety.estop));
       statusBadge.textContent = `status:${data.status || "unknown"}`;
+      renderMetrics(data.metrics, data.quality, data.trajectory, data.macro_event);
+      if (data.wizard_step && lastWizard && data.wizard_step !== lastWizard.step) {
+        // keep wizard in sync if changed elsewhere
+        setWizard(`goto:${data.wizard_step}`);
+      }
       if (Array.isArray(data.guide) && guideEl.children.length === 0) renderGuide(data.guide);
     };
     ws.onclose = () => setBadge(statusBadge, "status:disconnected", false);
@@ -638,6 +811,7 @@
     buildTrimSliders();
     initSettings();
     fetch("/api/guide").then(r => r.json()).then(d => renderGuide(d.guide)).catch(() => {});
+    setInterval(refreshTrajectoryList, 5000);
   </script>
 </body>
 </html>
