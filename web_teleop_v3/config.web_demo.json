@@ -1,0 +1,91 @@
+{
+  "arm_side": "right",
+  "calibration_file": "web_teleop_v3/calibration.runtime.json",
+  "smoothing_alpha": 0.2,
+  "feature_smoothing_alpha": 0.28,
+  "deadzone_deg": 0.7,
+  "feature_deadzone": 0.12,
+  "max_step_deg": [5.0, 5.0, 6.0, 7.0, 6.0, 8.0],
+  "lost_pose_hold_frames": 8,
+  "pose_visibility_threshold": 0.35,
+  "lost_mode": "hold",
+  "feature_ranges": {
+    "base_yaw": { "min": -70.0, "max": 70.0, "center_calibrated": true, "center_offset": 0.0 },
+    "shoulder_pitch": { "min": -55.0, "max": 80.0, "center_calibrated": true, "center_offset": 0.0 },
+    "elbow_bend": { "min": -100.0, "max": 100.0, "center_calibrated": true, "center_offset": 0.0 },
+    "forearm_roll": { "min": -120.0, "max": 120.0, "center_calibrated": true, "center_offset": 0.0 },
+    "wrist_pitch": { "min": -90.0, "max": 90.0, "center_calibrated": true, "center_offset": 0.0 },
+    "gripper": { "min": 0.75, "max": 2.2, "center_calibrated": false, "center_offset": 0.0 }
+  },
+  "motors": [
+    {
+      "id": "motor_1",
+      "feature_source": "base_yaw",
+      "min_deg": -160.0,
+      "max_deg": 160.0,
+      "home_deg": 0.0,
+      "mapping": "delta",
+      "invert": false,
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_2",
+      "feature_source": "shoulder_pitch",
+      "min_deg": -90.0,
+      "max_deg": 90.0,
+      "home_deg": 0.0,
+      "mapping": "delta",
+      "invert": false,
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_3",
+      "feature_source": "elbow_bend",
+      "min_deg": -120.0,
+      "max_deg": 120.0,
+      "home_deg": 0.0,
+      "mapping": "delta",
+      "invert": false,
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_4",
+      "feature_source": "forearm_roll",
+      "min_deg": -180.0,
+      "max_deg": 180.0,
+      "home_deg": 0.0,
+      "mapping": "delta",
+      "invert": false,
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_5",
+      "feature_source": "wrist_pitch",
+      "min_deg": -90.0,
+      "max_deg": 90.0,
+      "home_deg": 0.0,
+      "mapping": "delta",
+      "invert": false,
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_6",
+      "feature_source": "gripper",
+      "min_deg": 0.0,
+      "max_deg": 90.0,
+      "home_deg": 8.0,
+      "mapping": "range",
+      "invert": true,
+      "gain": 1.0,
+      "offset": 0.0
+    }
+  ],
+  "digital_twin": {
+    "link_lengths_m": [0.1, 0.12, 0.1, 0.08, 0.06, 0.05]
+  }
+}
