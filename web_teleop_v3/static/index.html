@@ -4,146 +4,321 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Clutch Web Teleop V3</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Unbounded:wght@700;900&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0d1117;
-      --panel: #161b22;
-      --line: #30363d;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --ok: #2ea043;
-      --warn: #db6d28;
-      --blue: #2f81f7;
+      --bg: #090909;
+      --surface: #111111;
+      --surface-2: #0d0d0d;
+      --line: #262626;
+      --text: #f3f4f6;
+      --muted: #7f7f7f;
+      --ok: #6dfaaa;
+      --warn: #f59e0b;
+      --bad: #ff7b7b;
+      --blue: #6da9ff;
     }
     * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; }
     body {
       margin: 0;
       color: var(--text);
-      font-family: "Segoe UI", Tahoma, sans-serif;
-      background: radial-gradient(circle at top, #1a2231 0%, #0d1117 55%);
-    }
-    .topbar {
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(13, 17, 23, 0.86);
-      backdrop-filter: blur(4px);
-    }
-    .title { font-size: 18px; font-weight: 600; }
-    .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .controls label { color: var(--muted); font-size: 12px; }
-    select, button {
-      background: #1f2630;
-      color: var(--text);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 7px 10px;
-      font-size: 13px;
-    }
-    button { cursor: pointer; }
-    .badge {
-      padding: 6px 10px;
-      font-size: 12px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      color: var(--muted);
-    }
-    .ok { border-color: var(--ok); color: #7ee787; }
-    .warn { border-color: var(--warn); color: #ffa657; }
-
-    .grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-      padding: 12px;
-    }
-    .panel {
-      background: rgba(22, 27, 34, 0.93);
-      border: 1px solid var(--line);
-      border-radius: 12px;
+      font-family: "Inter", sans-serif;
+      background: var(--bg);
       overflow: hidden;
     }
-    .panel h3 {
-      margin: 0;
-      font-size: 13px;
-      letter-spacing: 0.02em;
-      color: #c9d1d9;
+    .app-header {
+      height: 64px;
       border-bottom: 1px solid var(--line);
-      padding: 9px 12px;
+      background: #0b0b0b;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 0 16px;
+    }
+    .logo {
+      text-decoration: none;
+      color: #fff;
+      font-family: "Unbounded", sans-serif;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    .header-meta { min-width: 0; }
+    .title {
+      font-family: "Unbounded", sans-serif;
+      font-size: 12px;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .badges {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .badge {
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      border: 1px solid #2b2b2b;
+      color: #a3a3a3;
+      background: rgba(22, 22, 22, 0.85);
+    }
+    .ok { border-color: rgba(109, 250, 170, 0.5); color: #9df8c7; }
+    .warn { border-color: rgba(245, 158, 11, 0.6); color: #ffcb72; }
+
+    .shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 420px;
+      gap: 12px;
+      padding: 12px;
+      height: calc(100vh - 64px);
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .stage {
+      position: relative;
+      min-height: 0;
+      background: #0a0a0a;
+    }
+    .v-label {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      z-index: 3;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-family: ui-monospace, monospace;
+    }
+    #viewer {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #090909;
+    }
+    .camera-dock {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      width: min(330px, 42vw);
+      z-index: 4;
+      border-radius: 12px;
+      border: 1px solid rgba(109, 250, 170, 0.24);
+      background: rgba(16, 20, 18, 0.82);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      box-shadow: 0 14px 48px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+    }
+    .camera-dock h3 {
+      margin: 0;
+      padding: 9px 10px;
+      font-family: "Unbounded", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 10px;
+      color: #90f6bb;
+      border-bottom: 1px solid rgba(109, 250, 170, 0.22);
+      background: rgba(7, 11, 9, 0.82);
     }
     #camera {
       width: 100%;
       display: block;
-      background: #000;
-      aspect-ratio: 16 / 9;
+      aspect-ratio: 4 / 3;
       object-fit: cover;
+      background: #000;
     }
-    #viewer {
-      width: 100%;
-      height: min(60vh, 620px);
-      display: block;
+    .camera-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 10px 9px;
+      border-top: 1px solid rgba(109, 250, 170, 0.22);
+      background: rgba(7, 11, 9, 0.82);
     }
-    .bottom {
+    .camera-actions button {
+      min-height: 28px;
+      padding: 4px 10px;
+      border-radius: 7px;
+      font-size: 11px;
+      font-family: "Unbounded", sans-serif;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border: 1px solid rgba(109, 250, 170, 0.28);
+      background: rgba(20, 30, 24, 0.82);
+      color: #c9f7dd;
+    }
+    .camera-actions button.active {
+      border-color: rgba(109, 250, 170, 0.75);
+      color: #e8fff3;
+      background: rgba(26, 48, 36, 0.96);
+    }
+    .camera-status {
+      margin-left: auto;
+      color: #97dcb8;
+      font-size: 10px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-family: "Unbounded", sans-serif;
+    }
+    .zoom-dock {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 4;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .zoom-dock button {
+      width: 34px;
+      min-height: 34px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      background: rgba(8, 8, 8, 0.62);
+      color: #e5e7eb;
+      font-family: "Unbounded", sans-serif;
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .zoom-dock button:hover {
+      border-color: rgba(255, 255, 255, 0.68);
+    }
+
+    .drawer {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface-2);
+    }
+    .drawer-block {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 12px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .drawer-block:last-child { border-bottom: none; }
+    .drawer h3 {
+      margin: 0 0 8px;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-family: "Unbounded", sans-serif;
+    }
+    .controls {
       display: grid;
-      grid-template-columns: 1.25fr 1fr;
-      gap: 12px;
-      padding: 0 12px 12px;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
     }
+    .controls .full { grid-column: 1 / -1; }
+    .controls label {
+      color: #9aa0a6;
+      font-size: 11px;
+      align-self: center;
+    }
+    select, button {
+      background: #121212;
+      color: #f3f4f6;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-family: "Inter", sans-serif;
+      min-height: 34px;
+    }
+    button { cursor: pointer; }
+    button:hover, select:hover {
+      border-color: #3a3a3a;
+    }
+    .row-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .drawer-scroll {
+      overflow: auto;
+      min-height: 0;
+      flex: 1;
+    }
+
     .motor-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(160px, 1fr));
-      gap: 9px;
-      padding: 10px 12px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
     }
     .card {
       border: 1px solid var(--line);
       border-radius: 9px;
       padding: 8px;
-      background: #11161d;
+      background: #101010;
     }
-    .name { font-size: 12px; color: var(--muted); }
-    .value { margin-top: 4px; font-size: 16px; font-weight: 700; }
+    .name { font-size: 11px; color: #8b8b8b; }
+    .value {
+      margin-top: 3px;
+      font-size: 18px;
+      font-family: "Unbounded", sans-serif;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
     .bar {
-      margin-top: 7px;
-      height: 6px;
+      margin-top: 8px;
+      height: 3px;
       border-radius: 999px;
-      background: #2d333b;
+      background: #2a2a2a;
       overflow: hidden;
     }
     .fill {
       height: 100%;
       width: 0%;
-      background: linear-gradient(90deg, #238636, #3fb950);
+      background: linear-gradient(90deg, #7de4a2, #6dfaaa);
       transition: width 0.08s linear;
     }
     .trim-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(200px, 1fr));
+      grid-template-columns: 1fr;
       gap: 8px;
-      padding: 0 12px 12px;
+      margin-top: 9px;
     }
     .trim-row {
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 8px;
-      background: #10151c;
+      background: #101010;
     }
+    .trim-row input[type="range"] { accent-color: #87efb4; }
     .trim-row input[type="range"] { width: 100%; }
-    .guide {
-      padding: 10px 12px 12px;
-    }
+    .guide { padding: 0; }
     .howto {
       margin-bottom: 10px;
       padding: 8px 10px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: #0f1520;
+      background: #101010;
     }
     .howto ol {
       margin: 6px 0 0 18px;
@@ -157,76 +332,314 @@
     .guide-item {
       margin: 8px 0;
       border-left: 3px solid var(--blue);
-      background: #11161d;
+      background: #101010;
       border-radius: 6px;
       padding: 8px 10px;
     }
     .guide-item strong { color: #9ecbff; }
     .muted { font-size: 12px; color: var(--muted); }
 
-    @media (max-width: 980px) {
-      .grid, .bottom { grid-template-columns: 1fr; }
-      .motor-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
-      .trim-grid { grid-template-columns: 1fr; }
-      #viewer { height: 52vh; }
+    @media (max-width: 1180px) {
+      .shell {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(52vh, 1fr) auto;
+        height: calc(100vh - 64px);
+      }
+      .drawer {
+        max-height: 42vh;
+      }
+      .camera-dock {
+        width: min(280px, 45vw);
+      }
+    }
+    @media (max-width: 780px) {
+      .app-header {
+        height: auto;
+        padding: 10px 12px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .badges {
+        margin-left: 0;
+        justify-content: flex-start;
+      }
+      .controls {
+        grid-template-columns: 1fr;
+      }
+      .row-2 {
+        grid-template-columns: 1fr;
+      }
+      .motor-grid {
+        grid-template-columns: 1fr;
+      }
+      .camera-dock {
+        width: calc(100% - 24px);
+      }
     }
   </style>
 </head>
 <body>
-  <div class="topbar">
-    <div class="title">Clutch V3: One-Arm Follow (Camera + 3D Twin)</div>
-    <div class="controls">
-      <label for="armSelect">Tracked Arm</label>
-      <select id="armSelect">
-        <option value="right">Right Arm</option>
-        <option value="left">Left Arm</option>
-      </select>
-      <button id="calibrateBtn">Calibrate Neutral Pose</button>
-      <button id="saveCalibBtn">Save Calibration JSON</button>
-      <button id="freezeBtn">Freeze</button>
-      <button id="estopBtn">E-Stop</button>
-      <button id="homeBtn">Home</button>
-      <button id="recStartBtn">Rec Start</button>
-      <button id="recStopBtn">Rec Stop</button>
-      <select id="trajSelect"></select>
-      <button id="playBtn">Play</button>
-      <button id="stopPlayBtn">Stop Play</button>
+  <header class="app-header">
+    <a class="logo" href="/main">CLUTCH</a>
+    <div class="header-meta">
+      <div class="title">Clutch V3 - Dual-Arm Follow</div>
+      <div class="subtitle">Camera + 3D Twin - SO101 Teleoperation Demo</div>
+    </div>
+    <div class="badges">
       <span id="poseBadge" class="badge">pose:false</span>
       <span id="handBadge" class="badge">hand:false</span>
       <span id="freezeBadge" class="badge">freeze:false</span>
       <span id="estopBadge" class="badge">estop:false</span>
       <span id="statusBadge" class="badge">status:booting</span>
     </div>
-  </div>
+  </header>
 
-  <div class="grid">
-    <div class="panel">
-      <h3>Live Camera Feed (Selected Arm Overlay)</h3>
-      <img id="camera" alt="camera feed" />
-    </div>
-    <div class="panel">
-      <h3>3D Robot Twin + Human Arm Reference</h3>
+  <div class="shell">
+    <section class="panel stage">
+      <div class="v-label">3D Robot Twin + Human Arm Reference</div>
       <canvas id="viewer"></canvas>
-    </div>
+      <div class="zoom-dock">
+        <button id="zoomInBtn" title="Zoom In">+</button>
+        <button id="zoomOutBtn" title="Zoom Out">-</button>
+      </div>
+      <div class="camera-dock">
+        <h3>Live Camera Feed</h3>
+        <img id="camera" alt="camera feed" />
+        <div class="camera-actions">
+          <button id="camToggleBtn" class="active">Stop</button>
+          <span id="camStatus" class="camera-status">Live</span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel drawer">
+      <div class="drawer-scroll">
+        <section class="drawer-block">
+          <h3>Controls</h3>
+          <div class="controls">
+            <label for="armSelect">Tracked Arm</label>
+            <select id="armSelect">
+              <option value="right">Right Arm</option>
+              <option value="left">Left Arm</option>
+            </select>
+            <button id="calibrateBtn">Calibrate Neutral Pose</button>
+            <button id="saveCalibBtn">Save Calibration JSON</button>
+            <button id="depthNeutralBtn">Depth Neutral</button>
+            <button id="depthNearBtn">Depth Near</button>
+            <button id="depthFarBtn">Depth Far</button>
+            <button id="depthResetBtn">Depth Reset</button>
+            <button id="freezeBtn">Freeze</button>
+            <button id="estopBtn">E-Stop</button>
+            <button id="homeBtn">Home</button>
+            <button id="resetBtn">Reset Robots</button>
+            <div class="row-2 full">
+              <button id="recStartBtn">Rec Start</button>
+              <button id="recStopBtn">Rec Stop</button>
+            </div>
+            <select id="trajSelect" class="full"></select>
+            <div class="row-2 full">
+              <button id="playBtn">Play</button>
+              <button id="stopPlayBtn">Stop Play</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="drawer-block">
+          <h3>Motor Targets + Limb Calibration (Trim)</h3>
+          <div class="motor-grid" id="motorGrid"></div>
+          <div class="trim-grid" id="trimGrid"></div>
+        </section>
+
+        <section class="drawer-block">
+          <h3>Guide: Which Body Motion Moves Which Joint</h3>
+          <div class="guide" id="guide"></div>
+          <div class="guide" id="wizardBox"></div>
+          <div class="guide" id="metricsBox"></div>
+        </section>
+      </div>
+    </aside>
   </div>
 
-  <div class="bottom">
-    <div class="panel">
-      <h3>Motor Targets + Limb Calibration (Trim)</h3>
-      <div class="motor-grid" id="motorGrid"></div>
-      <div class="trim-grid" id="trimGrid"></div>
-    </div>
-    <div class="panel">
-      <h3>Guide: Which Body Motion Moves Which Joint</h3>
-      <div class="guide" id="guide"></div>
-      <div class="guide" id="wizardBox"></div>
-      <div class="guide" id="metricsBox"></div>
-    </div>
-  </div>
+  <script type="module">
+    import * as THREE from "https://esm.sh/three@0.160.0";
+    import { OrbitControls } from "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+    import URDFLoader from "https://esm.sh/urdf-loader@0.12.6?deps=three@0.160.0";
 
-  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    const canvas = document.getElementById("viewer");
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x090909);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.58));
+    const key = new THREE.DirectionalLight(0xffffff, 0.88);
+    key.position.set(2.6, 3.8, 2.4);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0xaaccff, 0.24);
+    fill.position.set(-2.2, 1.2, -1.8);
+    scene.add(fill);
+
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(5.0, 5.0),
+      new THREE.MeshStandardMaterial({ color: 0x171717, roughness: 0.9, metalness: 0.05 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = 0;
+    scene.add(floor);
+
+    const cam3 = new THREE.PerspectiveCamera(45, 1, 0.01, 40);
+    cam3.position.set(1.9, 1.45, 1.95);
+    const orbit = new OrbitControls(cam3, renderer.domElement);
+    orbit.enableDamping = true;
+    orbit.dampingFactor = 0.1;
+    orbit.enableZoom = true;
+    orbit.zoomSpeed = 8.5;
+    orbit.rotateSpeed = 1.0;
+    orbit.panSpeed = 1.05;
+    orbit.enablePan = false;
+    const baseFocus = new THREE.Vector3(0, 0.07, 0);
+    orbit.target.copy(baseFocus);
+
+    function dolly(scale) {
+      orbit.target.copy(baseFocus);
+      const dir = cam3.position.clone().sub(baseFocus);
+      dir.multiplyScalar(scale);
+      const dist = dir.length();
+      const clamped = Math.max(0.18, Math.min(6.5, dist));
+      dir.setLength(clamped);
+      cam3.position.copy(baseFocus.clone().add(dir));
+      cam3.updateProjectionMatrix();
+    }
+    const zoomInBtn = document.getElementById("zoomInBtn");
+    const zoomOutBtn = document.getElementById("zoomOutBtn");
+    if (zoomInBtn) zoomInBtn.addEventListener("click", () => dolly(0.86));
+    if (zoomOutBtn) zoomOutBtn.addEventListener("click", () => dolly(1.16));
+
+    const robots = { right: null, left: null };
+    const URDF_URL = "/assets/so101/so101_new_calib.urdf";
+    const loader = new URDFLoader();
+
+    function getArmOrientation(side) {
+      // Keep both twins with identical Y/Z orientation.
+      return { x: -Math.PI / 2, y: 0.0, z: Math.PI };
+    }
+
+    function loadRobot(side, xOffset) {
+      loader.load(
+        URDF_URL,
+        (r) => {
+          robots[side] = r;
+          const rot = getArmOrientation(side);
+          r.rotation.set(rot.x, rot.y, rot.z);
+          r.position.x = xOffset;
+          r.position.y = 0.0;
+          r.position.z = 0.0;
+          r.scale.set(1, 1, 1);
+          r.traverse((c) => {
+            if (c.isMesh) {
+              c.castShadow = true;
+              c.receiveShadow = true;
+            }
+          });
+          scene.add(r);
+          fitRobot();
+        },
+        undefined,
+        (err) => {
+          console.error(`SO101 URDF load failed (${side}):`, err);
+        }
+      );
+    }
+    loadRobot("left", -0.42);
+    loadRobot("right", 0.42);
+
+    function fitRobot() {
+      const ready = [robots.left, robots.right].filter(Boolean);
+      if (!ready.length) return;
+      const group = new THREE.Group();
+      ready.forEach((r) => group.add(r.clone()));
+      const box = new THREE.Box3().setFromObject(group);
+      if (box.isEmpty()) return;
+      const center = new THREE.Vector3();
+      const size = new THREE.Vector3();
+      box.getCenter(center);
+      box.getSize(size);
+      const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
+      const targetSpan = 1.18;
+      ready.forEach((r) => r.scale.setScalar(targetSpan / maxDim));
+      baseFocus.set(0, box.min.y + 0.04, 0);
+      orbit.target.copy(baseFocus);
+      orbit.update();
+    }
+
+    function setJoint(robot, name, value) {
+      if (!robot || typeof robot.setJointValue !== "function") return;
+      try {
+        robot.setJointValue(name, value);
+      } catch (_) {
+        // ignored: missing joints in some URDF variants
+      }
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+    const twinSmoothedRight = [0, 0, 0, 0, 0, 0];
+    const twinSmoothedLeft = [0, 0, 0, 0, 0, 0];
+    const TWIN_RESPONSE = 0.82; // higher = faster visual response
+    function applyRobotPose(robot, smoothDeg) {
+      if (!robot) return;
+      const r = Math.PI / 180;
+      setJoint(robot, "shoulder_pan", smoothDeg[0] * r);
+      setJoint(robot, "shoulder_lift", smoothDeg[1] * r);
+      setJoint(robot, "elbow_flex", smoothDeg[2] * r);
+      // Match requested mapping: motor 4 = wrist flex, motor 5 = wrist roll.
+      setJoint(robot, "wrist_flex", smoothDeg[3] * r);
+      setJoint(robot, "wrist_roll", smoothDeg[4] * r);
+      const g = Math.max(0.0, Math.min(1.0, smoothDeg[5] / 90.0)); // 0=open, 1=closed
+      const grip = (1.20 * (1.0 - g)) + (-0.15 * g);
+      setJoint(robot, "gripper", grip);
+    }
+    // URDF joints driven directly from backend motor targets for both arms.
+    window.__updateRobotTwin = (rightDeg, leftDeg) => {
+      const useRight = Array.isArray(rightDeg) && rightDeg.length >= 6 ? rightDeg : null;
+      const useLeft = Array.isArray(leftDeg) && leftDeg.length >= 6 ? leftDeg : null;
+      if (!useRight && !useLeft) return;
+      for (let i = 0; i < 6; i++) {
+        const rr = useRight ? Number(useRight[i]) : twinSmoothedRight[i];
+        const ll = useLeft ? Number(useLeft[i]) : twinSmoothedLeft[i];
+        const rv = Number.isFinite(rr) ? rr : twinSmoothedRight[i];
+        const lv = Number.isFinite(ll) ? ll : twinSmoothedLeft[i];
+        twinSmoothedRight[i] = lerp(twinSmoothedRight[i], rv, TWIN_RESPONSE);
+        twinSmoothedLeft[i] = lerp(twinSmoothedLeft[i], lv, TWIN_RESPONSE);
+      }
+      applyRobotPose(robots.right, twinSmoothedRight);
+      applyRobotPose(robots.left, twinSmoothedLeft);
+    };
+
+    function resize() {
+      const r = canvas.getBoundingClientRect();
+      const w = Math.max(120, r.width);
+      const h = Math.max(120, r.height);
+      renderer.setSize(w, h, false);
+      cam3.aspect = w / h;
+      cam3.updateProjectionMatrix();
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    (function renderLoop() {
+      requestAnimationFrame(renderLoop);
+      orbit.target.copy(baseFocus);
+      orbit.update();
+      renderer.render(scene, cam3);
+    })();
+  </script>
   <script>
     const cameraEl = document.getElementById("camera");
+    const camToggleBtn = document.getElementById("camToggleBtn");
+    const camStatus = document.getElementById("camStatus");
     const poseBadge = document.getElementById("poseBadge");
     const handBadge = document.getElementById("handBadge");
     const freezeBadge = document.getElementById("freezeBadge");
@@ -235,9 +648,14 @@
     const armSelect = document.getElementById("armSelect");
     const calibrateBtn = document.getElementById("calibrateBtn");
     const saveCalibBtn = document.getElementById("saveCalibBtn");
+    const depthNeutralBtn = document.getElementById("depthNeutralBtn");
+    const depthNearBtn = document.getElementById("depthNearBtn");
+    const depthFarBtn = document.getElementById("depthFarBtn");
+    const depthResetBtn = document.getElementById("depthResetBtn");
     const freezeBtn = document.getElementById("freezeBtn");
     const estopBtn = document.getElementById("estopBtn");
     const homeBtn = document.getElementById("homeBtn");
+    const resetBtn = document.getElementById("resetBtn");
     const recStartBtn = document.getElementById("recStartBtn");
     const recStopBtn = document.getElementById("recStopBtn");
     const playBtn = document.getElementById("playBtn");
@@ -249,17 +667,28 @@
     const wizardBox = document.getElementById("wizardBox");
     const metricsBox = document.getElementById("metricsBox");
 
-    const motorNames = ["Base", "Shoulder", "Elbow", "Forearm Roll", "Wrist Pitch", "Gripper"];
-    const motorRanges = [[-160,160],[-90,90],[-120,120],[-180,180],[-90,90],[0,90]];
+    const motorNames = ["Base", "Shoulder", "Elbow", "Wrist Flex", "Wrist Roll", "Gripper"];
+    let motorRanges = [[-160,160],[-90,90],[-120,120],[-180,180],[-90,90],[0,90]];
     let lastMotors = [0,0,0,0,0,0];
+    let lastMotorsRight = [0,0,0,0,0,0];
+    let lastMotorsLeft = [0,0,0,0,0,0];
     let trims = [0,0,0,0,0,0];
-    let humanArmWorld = null;
     let lastWizard = null;
+    let cameraPaused = false;
 
     function setBadge(el, text, ok) {
       el.textContent = text;
       el.classList.toggle("ok", !!ok);
       el.classList.toggle("warn", !ok);
+    }
+
+    function setCameraLive(on) {
+      cameraPaused = !on;
+      if (camToggleBtn) {
+        camToggleBtn.textContent = on ? "Stop" : "Camera";
+        camToggleBtn.classList.toggle("active", !!on);
+      }
+      if (camStatus) camStatus.textContent = on ? "Live" : "Stopped";
     }
 
     function buildMotorCards() {
@@ -288,10 +717,16 @@
       }
       for (let i = 0; i < 6; i++) {
         const s = document.getElementById(`tslider${i}`);
+        if (!s) continue;
         s.addEventListener("input", () => {
           trims[i] = parseFloat(s.value);
           document.getElementById(`tval${i}`).textContent = `${trims[i].toFixed(1)} deg`;
-          scheduleTrimPush();
+          pushTrimsNow();
+        });
+        s.addEventListener("change", () => {
+          trims[i] = parseFloat(s.value);
+          document.getElementById(`tval${i}`).textContent = `${trims[i].toFixed(1)} deg`;
+          pushTrimsNow();
         });
       }
     }
@@ -314,12 +749,14 @@
       howto.innerHTML = `
         <strong>How To Operate (Stable Mode)</strong>
         <ol>
-          <li>Stand 1-1.5m from camera with your selected arm fully visible.</li>
-          <li>Select <em>Tracked Arm</em> (left/right) matching your actual arm.</li>
-          <li>Hold a neutral pose for 2 seconds, then click <em>Calibrate Neutral Pose</em>.</li>
-          <li>Move slowly first; avoid fast jerks to keep tracking locked.</li>
-          <li>Use trim sliders until robot limb directions align to your arm.</li>
-          <li>Click <em>Save Calibration JSON</em> to keep settings for next run.</li>
+          <li>Stand 1-1.5m from camera with shoulders, elbows, wrists, and hands visible.</li>
+          <li>Each arm drives one robot: your right arm -> right robot, left arm -> left robot.</li>
+          <li>Overlay dots show key points: 2 shoulders, elbow, 2 wrists, thumb.</li>
+          <li>Hold neutral reach and click <em>Depth Neutral</em>.</li>
+          <li>Move hand close to camera and click <em>Depth Near</em>; move back and click <em>Depth Far</em>.</li>
+          <li>Then click <em>Calibrate Neutral Pose</em> and move naturally.</li>
+          <li>Use trim sliders if one joint direction needs fine correction.</li>
+          <li>Use <em>Reset Robots</em> to return both arms to safe home instantly.</li>
         </ol>
       `;
       guideEl.appendChild(howto);
@@ -351,10 +788,14 @@
       document.getElementById("wizResetBtn").onclick = () => setWizard("reset");
     }
 
-    function renderMetrics(metrics, quality, traj, macroEvent) {
+    function renderMetrics(metrics, quality, traj, macroEvent, safety, collisionBlocked, selectedArm, depthRight, depthLeft) {
       metrics = metrics || {};
       quality = quality || {};
       traj = traj || {};
+      safety = safety || {};
+      const d = (selectedArm === "left" ? depthLeft : depthRight) || {};
+      const dNorm = (typeof d.norm === "number") ? d.norm.toFixed(3) : "-";
+      const dFwd = (typeof d.forward === "number") ? d.forward.toFixed(3) : "-";
       metricsBox.innerHTML = `
         <div class="howto">
           <strong>Runtime Dashboard</strong>
@@ -362,6 +803,9 @@
           <div class="muted">jitter_deg: ${metrics.motor_jitter_avg_deg ?? "-"} | quality: ${metrics.quality_score_avg ?? "-"}</div>
           <div class="muted">brightness: ${quality.brightness ? quality.brightness.toFixed(1) : "-"} | blur_var: ${quality.blur_var ? quality.blur_var.toFixed(1) : "-"}</div>
           <div class="muted">recording: ${!!traj.recording} | playing: ${!!traj.playing} (${traj.play_name || "-"})</div>
+          <div class="muted">freeze:${!!safety.freeze} | estop:${!!safety.estop} | lost_count:${safety.lost_count ?? "-"}</div>
+          <div class="muted">collision_blocked: ${!!collisionBlocked}</div>
+          <div class="muted">depth_norm:${dNorm} | depth_forward:${dFwd}</div>
           <div class="muted">macro: ${macroEvent || "-"}</div>
         </div>
       `;
@@ -406,20 +850,37 @@
       }
     }
 
-    let trimTimer = null;
-    function scheduleTrimPush() {
-      if (trimTimer) clearTimeout(trimTimer);
-      trimTimer = setTimeout(async () => {
-        try {
-          await fetch("/api/trims", {
+    let trimPushInFlight = false;
+    let trimDirty = false;
+    async function pushTrimsNow() {
+      if (trimPushInFlight) {
+        trimDirty = true;
+        return;
+      }
+      trimPushInFlight = true;
+      try {
+        do {
+          trimDirty = false;
+          const payloadTrims = trims.slice();
+          const r = await fetch("/api/trims", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ trims_deg: trims }),
+            body: JSON.stringify({ trims_deg: payloadTrims }),
           });
-        } catch (e) {
-          console.error(e);
-        }
-      }, 120);
+          const d = await r.json();
+          if (d.ok && Array.isArray(d.trims_deg) && d.trims_deg.length === 6) {
+            trims = d.trims_deg.map(Number);
+          }
+        } while (trimDirty);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        trimPushInFlight = false;
+      }
+    }
+    function scheduleTrimPush() {
+      // kept for compatibility with older event wiring
+      pushTrimsNow();
     }
 
     armSelect.addEventListener("change", async () => {
@@ -460,6 +921,28 @@
       }
     });
 
+    async function depthCalibAction(action, btn) {
+      try {
+        await fetch("/api/depth_calibration", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, side: armSelect.value }),
+        });
+        if (btn) {
+          const old = btn.textContent;
+          btn.textContent = "Captured";
+          setTimeout(() => (btn.textContent = old), 900);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    if (depthNeutralBtn) depthNeutralBtn.addEventListener("click", () => depthCalibAction("capture_neutral", depthNeutralBtn));
+    if (depthNearBtn) depthNearBtn.addEventListener("click", () => depthCalibAction("capture_near", depthNearBtn));
+    if (depthFarBtn) depthFarBtn.addEventListener("click", () => depthCalibAction("capture_far", depthFarBtn));
+    if (depthResetBtn) depthResetBtn.addEventListener("click", () => depthCalibAction("reset", depthResetBtn));
+
     freezeBtn.addEventListener("click", async () => {
       await fetch("/api/safety", {
         method: "POST",
@@ -482,6 +965,10 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "home" }),
       });
+    });
+
+    if (resetBtn) resetBtn.addEventListener("click", async () => {
+      await fetch("/api/reset", { method: "POST" });
     });
 
     recStartBtn.addEventListener("click", async () => {
@@ -514,11 +1001,22 @@
       await fetch("/api/trajectory/stop_playback", { method: "POST" });
     });
 
+    if (camToggleBtn) camToggleBtn.addEventListener("click", () => setCameraLive(cameraPaused));
+
     async function initSettings() {
       try {
         const r = await fetch("/api/settings");
         const s = await r.json();
         if (s.selected_arm) armSelect.value = s.selected_arm;
+        if (Array.isArray(s.motor_ranges) && s.motor_ranges.length === 6) {
+          motorRanges = s.motor_ranges.map((pair, i) => {
+            if (!Array.isArray(pair) || pair.length < 2) return motorRanges[i];
+            const lo = Number(pair[0]);
+            const hi = Number(pair[1]);
+            if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo === hi) return motorRanges[i];
+            return [Math.min(lo, hi), Math.max(lo, hi)];
+          });
+        }
         if (Array.isArray(s.trims_deg) && s.trims_deg.length === 6) {
           trims = s.trims_deg.map(Number);
           for (let i = 0; i < 6; i++) {
@@ -548,19 +1046,53 @@
     const ws = new WebSocket(`${wsProto}://${location.host}/ws`);
     ws.onmessage = (ev) => {
       const data = JSON.parse(ev.data);
-      if (data.frame_b64) cameraEl.src = `data:image/jpeg;base64,${data.frame_b64}`;
-      if (Array.isArray(data.motors_deg) && data.motors_deg.length === 6) {
-        lastMotors = data.motors_deg.map(Number);
-        updateMotorCards(lastMotors);
+      if (!cameraPaused && data.frame_b64) cameraEl.src = `data:image/jpeg;base64,${data.frame_b64}`;
+      if (Array.isArray(data.motors_right_deg) && data.motors_right_deg.length === 6) {
+        lastMotorsRight = data.motors_right_deg.map((v) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : 0;
+        });
       }
-      humanArmWorld = Array.isArray(data.human_arm_world) ? data.human_arm_world : null;
+      if (Array.isArray(data.motors_left_deg) && data.motors_left_deg.length === 6) {
+        lastMotorsLeft = data.motors_left_deg.map((v) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : 0;
+        });
+      }
+      if (Array.isArray(data.motors_deg) && data.motors_deg.length === 6) {
+        lastMotors = data.motors_deg.map((v) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : 0;
+        });
+        updateMotorCards(lastMotors);
+      } else {
+        const fallback = [];
+        for (let i = 1; i <= 6; i++) {
+          const n = Number(data[`motor_${i}`]);
+          fallback.push(Number.isFinite(n) ? n : 0);
+        }
+        if (fallback.some((v) => v !== 0)) {
+          lastMotors = fallback;
+          updateMotorCards(lastMotors);
+        }
+      }
       if (data.selected_arm && armSelect.value !== data.selected_arm) armSelect.value = data.selected_arm;
       setBadge(poseBadge, `pose:${!!data.pose_detected}`, !!data.pose_detected);
       setBadge(handBadge, `hand:${!!data.hand_detected}`, !!data.hand_detected);
       setBadge(freezeBadge, `freeze:${!!(data.safety && data.safety.freeze)}`, !!(data.safety && data.safety.freeze));
       setBadge(estopBadge, `estop:${!!(data.safety && data.safety.estop)}`, !!(data.safety && data.safety.estop));
       statusBadge.textContent = `status:${data.status || "unknown"}`;
-      renderMetrics(data.metrics, data.quality, data.trajectory, data.macro_event);
+      renderMetrics(
+        data.metrics,
+        data.quality,
+        data.trajectory,
+        data.macro_event,
+        data.safety,
+        data.collision_blocked,
+        data.selected_arm || armSelect.value,
+        data.depth_right,
+        data.depth_left
+      );
       if (data.wizard_step && lastWizard && data.wizard_step !== lastWizard.step) {
         // keep wizard in sync if changed elsewhere
         setWizard(`goto:${data.wizard_step}`);
@@ -569,246 +1101,18 @@
     };
     ws.onclose = () => setBadge(statusBadge, "status:disconnected", false);
 
-    // ===== Three.js Scene =====
-    const canvas = document.getElementById("viewer");
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0f14);
-
-    const cam3 = new THREE.PerspectiveCamera(52, 1, 0.01, 30);
-    cam3.position.set(2.0, 1.6, 2.2);
-    cam3.lookAt(0, 0.6, 0);
-
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x1b2a3f, 0.95));
-    const dl = new THREE.DirectionalLight(0xffffff, 0.85);
-    dl.position.set(2.5, 3.0, 1.8);
-    scene.add(dl);
-
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(4.5, 4.5),
-      new THREE.MeshStandardMaterial({ color: 0x1c2633, roughness: 0.9, metalness: 0.0 })
-    );
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = 0;
-    scene.add(floor);
-
-    const axis = new THREE.AxesHelper(0.45);
-    axis.position.y = 0.02;
-    scene.add(axis);
-
-    // Fixed white support pole (non-moving)
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.035, 0.035, 0.66, 28),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, metalness: 0.1 })
-    );
-    pole.position.set(0, 0.33, 0);
-    scene.add(pole);
-
-    const base = new THREE.Group();
-    base.position.set(0, 0.66, 0);
-    scene.add(base);
-
-    const jointAxis = ["y", "z", "z", "x", "z", "x"];
-    const baseLens = [0.1, 0.18, 0.19, 0.10, 0.08, 0.05];
-    const currentLens = [...baseLens];
-    const linkMeshes = [];
-    const nextGroups = [];
-    const joints = [];
-    const linkMaterial = new THREE.MeshStandardMaterial({ color: 0x4da3ff, roughness: 0.4, metalness: 0.25 });
-    const jointMaterial = new THREE.MeshStandardMaterial({ color: 0xd8e6ff, roughness: 0.35, metalness: 0.15 });
-
-    let parent = base;
-    for (let i = 0; i < 6; i++) {
-      const joint = new THREE.Group();
-      parent.add(joint);
-
-      const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 16), jointMaterial);
-      joint.add(sphere);
-
-      const link = new THREE.Mesh(new THREE.BoxGeometry(baseLens[i], 0.07, 0.07), linkMaterial);
-      link.position.x = baseLens[i] * 0.5;
-      joint.add(link);
-
-      const next = new THREE.Group();
-      next.position.x = baseLens[i];
-      joint.add(next);
-
-      joints.push({ joint, axis: jointAxis[i] });
-      linkMeshes.push(link);
-      nextGroups.push(next);
-      parent = next;
-    }
-
-    const gripL = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.016, 0.03), new THREE.MeshStandardMaterial({ color: 0xffc857 }));
-    const gripR = gripL.clone();
-    gripL.position.set(0.085, 0.03, 0);
-    gripR.position.set(0.085, -0.03, 0);
-    parent.add(gripL);
-    parent.add(gripR);
-
-    // ===== SO101 STL model loading (local assets) =====
-    let jawMesh = null;
-    const modelScale = 1.65;
-    const printedMat = new THREE.MeshStandardMaterial({ color: 0xffd24d, roughness: 0.48, metalness: 0.08 });
-    const servoMat = new THREE.MeshStandardMaterial({ color: 0x2f3440, roughness: 0.36, metalness: 0.2 });
-
-    function parseSTL(arrayBuffer) {
-      const dv = new DataView(arrayBuffer);
-      if (dv.byteLength < 84) return null;
-      const faceCount = dv.getUint32(80, true);
-      const expected = 84 + faceCount * 50;
-      const isBinary = expected === dv.byteLength;
-
-      const geometry = new THREE.BufferGeometry();
-      if (isBinary) {
-        const positions = new Float32Array(faceCount * 9);
-        let p = 0;
-        let o = 84;
-        for (let f = 0; f < faceCount; f++) {
-          o += 12; // normal
-          for (let v = 0; v < 3; v++) {
-            positions[p++] = dv.getFloat32(o, true); o += 4;
-            positions[p++] = dv.getFloat32(o, true); o += 4;
-            positions[p++] = dv.getFloat32(o, true); o += 4;
-          }
-          o += 2; // attr
-        }
-        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-        geometry.computeVertexNormals();
-        return geometry;
-      }
-
-      const text = new TextDecoder().decode(new Uint8Array(arrayBuffer));
-      const vtx = [];
-      const re = /vertex\s+([\-+0-9.eE]+)\s+([\-+0-9.eE]+)\s+([\-+0-9.eE]+)/g;
-      let m;
-      while ((m = re.exec(text)) !== null) {
-        vtx.push(parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3]));
-      }
-      if (vtx.length < 9) return null;
-      geometry.setAttribute("position", new THREE.Float32BufferAttribute(vtx, 3));
-      geometry.computeVertexNormals();
-      return geometry;
-    }
-
-    async function loadSTLMesh(url, material) {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`Failed to load ${url}`);
-      const ab = await res.arrayBuffer();
-      const geom = parseSTL(ab);
-      if (!geom) throw new Error(`Invalid STL ${url}`);
-      const mesh = new THREE.Mesh(geom, material);
-      mesh.castShadow = false;
-      mesh.receiveShadow = true;
-      return mesh;
-    }
-
-    function applyRPY(obj, rpy) {
-      obj.rotation.set(rpy[0], rpy[1], rpy[2], "XYZ");
-    }
-
-    async function addSo101Part(parentGroup, file, xyz, rpy, material) {
-      const mesh = await loadSTLMesh(`/assets/so101/assets/${file}`, material);
-      mesh.scale.setScalar(modelScale);
-      mesh.position.set(xyz[0], xyz[1], xyz[2]);
-      applyRPY(mesh, rpy);
-      parentGroup.add(mesh);
-      return mesh;
-    }
-
-    async function buildSo101Model() {
-      const linkBase = base;
-      const linkShoulder = joints[0].joint;
-      const linkUpper = joints[1].joint;
-      const linkLower = joints[2].joint;
-      const linkWrist = joints[3].joint;
-      const linkGripper = joints[4].joint;
-      const linkJaw = joints[5].joint;
-
-      // Base link
-      await addSo101Part(linkBase, "base_motor_holder_so101_v1.stl", [-0.0064, -0.0001, -0.0024], [1.5708, 0.0, 1.5708], printedMat);
-      await addSo101Part(linkBase, "base_so101_v2.stl", [-0.0064, 0.0, -0.0024], [1.5708, 0.0, 1.5708], printedMat);
-      await addSo101Part(linkBase, "sts3215_03a_v1.stl", [0.0263, 0.0, 0.0437], [0, 0, 0], servoMat);
-
-      // Shoulder link
-      await addSo101Part(linkShoulder, "motor_holder_so101_base_v1.stl", [-0.0676, -0.0002, 0.0158], [1.5708, -1.5708, 0], printedMat);
-      await addSo101Part(linkShoulder, "rotation_pitch_so101_v1.stl", [0.0122, 0.0, 0.0464], [-1.5708, 0, 0], printedMat);
-      await addSo101Part(linkShoulder, "sts3215_03a_v1.stl", [-0.0304, 0.0004, -0.0417], [1.5708, 1.5708, 0], servoMat);
-
-      // Upper and lower arm links
-      await addSo101Part(linkUpper, "upper_arm_so101_v1.stl", [-0.0651, 0.012, 0.0182], [3.14159, 0, 0], printedMat);
-      await addSo101Part(linkUpper, "sts3215_03a_v1.stl", [-0.1126, -0.0155, 0.0187], [3.14159, 0, -1.5708], servoMat);
-      await addSo101Part(linkLower, "under_arm_so101_v1.stl", [-0.0648, -0.032, 0.0182], [3.14159, 0, 0], printedMat);
-      await addSo101Part(linkLower, "motor_holder_so101_wrist_v1.stl", [-0.0648, -0.032, 0.018], [3.14159, 0, 0], printedMat);
-      await addSo101Part(linkLower, "sts3215_03a_v1.stl", [-0.1224, 0.0052, 0.0187], [3.14159, 0, 3.14159], servoMat);
-
-      // Wrist + gripper links
-      await addSo101Part(linkWrist, "wrist_roll_pitch_so101_v2.stl", [0, -0.028, 0.0181], [-1.5708, -1.5708, 0], printedMat);
-      await addSo101Part(linkWrist, "sts3215_03a_no_horn_v1.stl", [0, -0.0424, 0.0306], [1.5708, 1.5708, 0], servoMat);
-      await addSo101Part(linkGripper, "wrist_roll_follower_so101_v1.stl", [0, -0.0002, 0.001], [3.14159, 0, 0], printedMat);
-      await addSo101Part(linkGripper, "sts3215_03a_v1.stl", [0.0077, 0.0001, -0.0234], [-1.5708, 0, 0], servoMat);
-      jawMesh = await addSo101Part(linkJaw, "moving_jaw_so101_v1.stl", [0, 0, 0.0189], [0, 0, 0], printedMat);
-
-      // Hide procedural boxes once the official STL model is loaded.
-      linkMeshes.forEach((m) => (m.visible = false));
-      gripL.visible = false;
-      gripR.visible = false;
-    }
-
-    buildSo101Model().catch((e) => console.error("SO101 model load error:", e));
-
-    // Human arm ghost line in same 3D space
-    const ghostMat = new THREE.LineBasicMaterial({ color: 0xff8c42 });
-    const ghostGeom = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(0,0,0), new THREE.Vector3(0.35,0,0), new THREE.Vector3(0.65,0,0)
-    ]);
-    const ghostLine = new THREE.Line(ghostGeom, ghostMat);
-    base.add(ghostLine);
-
-    function updateGhostAndScale(points) {
-      if (!Array.isArray(points) || points.length < 3) return;
-      const scale = 2.0;
-      const p0 = new THREE.Vector3(0,0,0);
-      const p1 = new THREE.Vector3(points[1][0]*scale, points[1][1]*scale, points[1][2]*scale);
-      const p2 = new THREE.Vector3(points[2][0]*scale, points[2][1]*scale, points[2][2]*scale);
-      ghostLine.geometry.setFromPoints([p0, p1, p2]);
-    }
-
-    function updateRobot(m) {
-      for (let i = 0; i < 6; i++) {
-        joints[i].joint.rotation[joints[i].axis] = THREE.MathUtils.degToRad(m[i] || 0);
-      }
-      const grip = Math.max(0, Math.min(1, (m[5] || 0) / 90));
-      const gap = 0.012 + (1 - grip) * 0.045;
-      gripL.position.y = gap;
-      gripR.position.y = -gap;
-      if (jawMesh) {
-        jawMesh.rotation.z = THREE.MathUtils.degToRad(-10 + grip * 36);
+    // ===== 3D twin bridge (actual renderer/model is in module script above) =====
+    function animateTwinBridge() {
+      requestAnimationFrame(animateTwinBridge);
+      if (typeof window.__updateRobotTwin === "function") {
+        window.__updateRobotTwin(lastMotorsRight, lastMotorsLeft);
       }
     }
-
-    function resize() {
-      const r = canvas.getBoundingClientRect();
-      const w = Math.max(120, r.width);
-      const h = Math.max(120, r.height);
-      renderer.setSize(w, h, false);
-      cam3.aspect = w / h;
-      cam3.updateProjectionMatrix();
-    }
-    window.addEventListener("resize", resize);
-    resize();
-
-    function animate() {
-      requestAnimationFrame(animate);
-      updateGhostAndScale(humanArmWorld);
-      updateRobot(lastMotors);
-      renderer.render(scene, cam3);
-    }
-    animate();
+    animateTwinBridge();
 
     buildMotorCards();
     buildTrimSliders();
+    setCameraLive(true);
     initSettings();
     fetch("/api/guide").then(r => r.json()).then(d => renderGuide(d.guide)).catch(() => {});
     setInterval(refreshTrajectoryList, 5000);

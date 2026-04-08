@@ -1,0 +1,5 @@
+# Hand → SO-101 (iliyas-tleuzhan/clutch TeleopMapper + MediaPipe)
+# pip install -r requirements-teleop.txt
+opencv-python>=4.9.0
+mediapipe>=0.10.14
+numpy>=1.26.0

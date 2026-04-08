@@ -30,6 +30,7 @@ class SafetySupervisor:
         self.last_macro = ""
         self.last_macro_ts = 0.0
         self.home_request_until = 0.0
+        self._freeze_before_estop = False
 
     def trigger_macro(self, macro_name: str):
         now = time.time()
@@ -38,14 +39,23 @@ class SafetySupervisor:
         if macro_name == "toggle_freeze":
             self.freeze = not self.freeze
         elif macro_name == "toggle_estop":
-            self.estop = not self.estop
-            if self.estop:
+            if not self.estop:
+                # Entering E-Stop: latch current freeze state and force freeze.
+                self._freeze_before_estop = bool(self.freeze)
+                self.estop = True
                 self.freeze = True
+            else:
+                # Leaving E-Stop: restore the operator's previous freeze intent.
+                self.estop = False
+                self.freeze = bool(self._freeze_before_estop)
+                self.lost_count = 0
         elif macro_name == "home":
             self.home_request_until = now + 1.0
 
     def clear_estop(self):
         self.estop = False
+        self.freeze = bool(self._freeze_before_estop)
+        self.lost_count = 0
 
     def set_freeze(self, freeze: bool):
         self.freeze = bool(freeze)

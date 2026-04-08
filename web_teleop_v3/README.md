@@ -1,21 +1,32 @@
-# Web Teleop V3 (Camera + 3D Twin In One Page)
+# Web Teleop V3 (Dual-Arm Camera + 3D Twins)
 
-This version is focused on cleaner control:
+This version is focused on full-arm teleoperation:
 
-- full-arm-follow style mapping (shoulder/elbow/wrist)
+- dual-arm follow: right human arm -> right robot, left human arm -> left robot
+- full-arm-follow mapping (shoulder/elbow/wrist/gripper)
+- required arm overlay: shoulder-elbow-wrist lines + key POI dots
 - smoother/deadzoned motor output
 - camera feed and 3D arm shown together on one web page
+- hand landmark lines visible on the camera feed
 - guide panel showing what movement controls each motor
 - single-arm mode with runtime arm-side selection
 - per-limb trim sliders for manual calibration
-- raised robot model with fixed white support pole + human-arm ghost line
 - uses local SO101 STL assets (downloaded from SO-ARM100 simulation files)
 - safety supervisor (freeze / estop / home + confidence gating)
-- gesture macros: fist=`freeze`, open palm=`home`, pinch=`estop` (hold-based)
+- gesture macros are available in code but disabled by default in config for stability
 - trajectory record/replay (JSON files in `web_teleop_v3/trajectories`)
 - runtime dashboard: FPS, processing latency, pose ratio, quality score, jitter
 - camera quality checks: low-light + blur warnings
 - calibration wizard steps in UI
+- reset endpoint/button for both robot twins
+- dual-arm collision guard (soft block when wrists move into collision)
+- depth fusion pipeline for reach perception:
+  - MediaPipe wrist z
+  - shoulder->wrist image-scale change
+  - palm-size change
+- One Euro depth-only filtering
+- per-arm depth calibration (neutral / near / far)
+- Group_Follower calibration file support for SO101 min/max ranges
 
 ## Run
 
@@ -37,6 +48,14 @@ Open:
 http://127.0.0.1:8010
 ```
 
+## Self Test
+
+Run a local API smoke test (starts/stops server automatically):
+
+```powershell
+python web_teleop_v3/self_test.py --camera 0 --port 8011 --config web_teleop_v3/config.web_demo.json
+```
+
 ## Controls
 
 - `Tracked Arm` selector: choose left or right arm only.
@@ -47,18 +66,26 @@ http://127.0.0.1:8010
 - `Freeze` button or fist gesture: hold current safe pose.
 - `E-Stop` button or pinch gesture: emergency stop latch.
 - `Home` button or open-palm gesture: move to home pose safely.
+- `Reset Robots`: reset both arms to safe home.
+- `Depth Neutral`: capture neutral reach baseline (selected arm).
+- `Depth Near`: move selected hand close to camera and capture.
+- `Depth Far`: move selected hand farther from camera and capture.
+- `Depth Reset`: clear depth calibration for selected arm.
 - `Rec Start` / `Rec Stop`: record trajectories.
 - `Play` / `Stop Play`: replay selected trajectory.
 
 ## How To Operate (Stable)
 
-1. Place camera so your selected arm (shoulder, elbow, wrist) is always visible.
+1. Place camera so both shoulders/elbows/wrists/hands are visible.
 2. Start with small, slow arm motions first; avoid sudden fast swings.
-3. Choose `Tracked Arm` correctly (`left` or `right`).
-4. Hold neutral pose for 2 seconds, then click `Calibrate Neutral Pose`.
-5. Adjust each `motor_X trim` slider until robot limb lines match your arm direction.
-6. Click `Save Calibration JSON` to persist your setup.
-7. Re-open app; verify saved trims/neutral offsets are auto-loaded.
+3. Right arm drives right robot; left arm drives left robot.
+4. Hold neutral reach and click `Depth Neutral`.
+5. Move hand close to camera and click `Depth Near`.
+6. Move hand far from camera and click `Depth Far`.
+7. Hold neutral pose for 2 seconds, then click `Calibrate Neutral Pose`.
+8. Adjust each `motor_X trim` slider until robot limb lines match your arm direction.
+9. Click `Save Calibration JSON` to persist your setup (includes depth calibration).
+10. Re-open app; verify saved trims/neutral offsets are auto-loaded.
 
 If motion is still shaky, tune `config.web_demo.json`:
 
@@ -78,6 +105,9 @@ If motion is still shaky, tune `config.web_demo.json`:
 
 ## New API Endpoints (Phase Start)
 
+- `GET /api/health`
+- `POST /api/reset`
+- `GET/POST /api/depth_calibration`
 - `GET/POST /api/safety`
 - `GET /api/trajectory`
 - `POST /api/trajectory/start`

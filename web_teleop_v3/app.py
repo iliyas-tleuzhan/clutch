@@ -2,14 +2,17 @@ import argparse
 import asyncio
 import base64
 import json
+import math
 import sys
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
 import cv2
 import mediapipe as mp
+import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,23 +32,43 @@ from web_teleop_v3.trajectory_manager import TrajectoryManager
 from web_teleop_v3.validation_report import generate_sim_real_report
 from web_teleop_v3.voice_commands import VoiceCommandEngine
 
+
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
 ROOT = THIS_DIR
 DEFAULT_CONFIG = ROOT / "config.web_demo.json"
 INDEX_HTML = ROOT / "static" / "index.html"
 MAIN_HTML = ROOT / "static" / "main.html"
+AUKI_INDEX_HTML = ROOT / "static" / "auki_bundle" / "index.html"
+AUKI_DEMO_HTML = ROOT / "static" / "auki_bundle" / "demo.html"
+DEFAULT_SO101_GROUP_FOLLOWER = Path(
+    "C:/Users/user/.cache/huggingface/lerobot/calibration/robots/so101_follower/Group_Follower.json"
+)
+
+SO101_JOINT_ORDER = [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_roll",
+    "wrist_flex",
+    "gripper",
+]
 
 GUIDE = [
-    {"motor": "motor_1", "name": "Base Yaw", "how": "Move whole arm left/right from shoulder"},
-    {"motor": "motor_2", "name": "Shoulder", "how": "Raise/lower your elbow"},
-    {"motor": "motor_3", "name": "Elbow", "how": "Bend/extend your elbow"},
-    {"motor": "motor_4", "name": "Forearm Roll", "how": "Rotate forearm (palm turn)"},
-    {"motor": "motor_5", "name": "Wrist Pitch", "how": "Tilt your wrist up/down"},
-    {"motor": "motor_6", "name": "Gripper", "how": "Open/close your hand"},
+    {"motor": "motor_1", "name": "Base (Shoulder-Elbow Horizontal)", "how": "Shoulder->elbow line moves left/right (horizontal)"},
+    {"motor": "motor_2", "name": "Shoulder (Shoulder-Elbow Vertical)", "how": "Shoulder->elbow line moves up/down (vertical)"},
+    {"motor": "motor_3", "name": "Elbow (Elbow-Wrist Vertical)", "how": "Elbow->wrist line moves up/down (vertical)"},
+    {"motor": "motor_4", "name": "Wrist Flex", "how": "Human wrist flex up/down controls robot wrist flex"},
+    {"motor": "motor_5", "name": "Wrist Roll", "how": "Human wrist roll controls robot wrist roll"},
+    {"motor": "motor_6", "name": "Gripper", "how": "Close thumb + fingers to close gripper, open hand to open gripper"},
 ]
 
 runtime_state = {
     "selected_arm": "right",
     "trims_deg": [0.0] * 6,
+    "motor_ranges": [[-160.0, 160.0], [-90.0, 90.0], [-120.0, 120.0], [-180.0, 180.0], [-90.0, 90.0], [0.0, 90.0]],
     "center_offsets": {},
     "calibration_file": str(ROOT / "calibration.runtime.json"),
     "wizard_step": 1,
@@ -57,6 +80,10 @@ runtime_state = {
         "Step 5: Record a short trajectory and replay it.",
         "Step 6: Save calibration JSON.",
     ],
+    "depth_calibration": {
+        "right": {"neutral": None, "near": None, "far": None},
+        "left": {"neutral": None, "near": None, "far": None},
+    },
 }
 
 
@@ -67,6 +94,8 @@ class SharedState:
             "timestamp": time.time(),
             "frame_b64": "",
             "motors_deg": [0.0] * 6,
+            "motors_right_deg": [0.0] * 6,
+            "motors_left_deg": [0.0] * 6,
             "motor_1": 0.0,
             "motor_2": 0.0,
             "motor_3": 0.0,
@@ -75,21 +104,34 @@ class SharedState:
             "motor_6": 0.0,
             "pose_detected": False,
             "hand_detected": False,
+            "pose_detected_right": False,
+            "pose_detected_left": False,
+            "hand_detected_right": False,
+            "hand_detected_left": False,
             "selected_arm": runtime_state["selected_arm"],
             "trims_deg": runtime_state["trims_deg"],
             "center_offsets": runtime_state["center_offsets"],
             "human_arm_world": None,
+            "human_arm_world_right": None,
+            "human_arm_world_left": None,
             "guide": GUIDE,
             "status": "initializing",
             "macro_event": "",
             "quality": {},
             "metrics": {},
             "safety": {},
+            "safety_right": {},
+            "safety_left": {},
             "trajectory": {},
             "wizard_step": runtime_state["wizard_step"],
+            "collision_blocked": False,
+            "depth_right": {},
+            "depth_left": {},
         }
         self.running = True
         self.calibrate_request = False
+        self.reset_request = False
+        self.depth_capture_request = {"right": "", "left": ""}
 
 
 state = SharedState()
@@ -105,6 +147,8 @@ runtime_settings = {
     "port": 8010,
 }
 safety_supervisor: Optional[SafetySupervisor] = None
+right_safety_supervisor: Optional[SafetySupervisor] = None
+left_safety_supervisor: Optional[SafetySupervisor] = None
 gesture_engine: Optional[GestureMacroEngine] = None
 
 
@@ -137,7 +181,59 @@ def load_config(path: str):
         raise ValueError("Config must define 6 motors.")
     if "feature_ranges" not in cfg:
         raise ValueError("Config must define feature_ranges.")
+    apply_group_follower_calibration(cfg)
     return cfg
+
+
+def _ticks_to_deg(raw_tick: float) -> float:
+    # STS-style 12-bit servo ticks (0..4095) mapped to approximately [-180, +180] degrees.
+    return (float(raw_tick) / 4095.0) * 360.0 - 180.0
+
+
+def apply_group_follower_calibration(cfg: dict) -> None:
+    calib_path_raw = cfg.get("robot_calibration_file")
+    if calib_path_raw:
+        calib_path = Path(str(calib_path_raw))
+    else:
+        calib_path = DEFAULT_SO101_GROUP_FOLLOWER
+    if not calib_path.exists():
+        return
+
+    try:
+        data = json.loads(calib_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    motors = cfg.get("motors")
+    if not isinstance(motors, list) or len(motors) != 6:
+        return
+
+    for i, joint_name in enumerate(SO101_JOINT_ORDER):
+        joint_cfg = data.get(joint_name)
+        if not isinstance(joint_cfg, dict):
+            continue
+
+        mn = joint_cfg.get("range_min")
+        mx = joint_cfg.get("range_max")
+        if mn is None or mx is None:
+            continue
+        try:
+            min_deg = _ticks_to_deg(float(mn))
+            max_deg = _ticks_to_deg(float(mx))
+        except Exception:
+            continue
+        if not math.isfinite(min_deg) or not math.isfinite(max_deg):
+            continue
+
+        lo, hi = (min_deg, max_deg) if min_deg <= max_deg else (max_deg, min_deg)
+        motors[i]["min_deg"] = float(round(lo, 3))
+        motors[i]["max_deg"] = float(round(hi, 3))
+
+        home = float(motors[i].get("home_deg", (lo + hi) * 0.5))
+        motors[i]["home_deg"] = float(max(lo, min(hi, home)))
+        motors[i]["calib_joint"] = joint_name
+        motors[i]["calib_servo_id"] = int(joint_cfg.get("id", i + 1))
+        motors[i]["calib_homing_offset"] = float(joint_cfg.get("homing_offset", 0.0))
 
 
 def _safe_float_list(values, n=6, default=0.0):
@@ -176,6 +272,23 @@ def load_saved_calibration(calib_path: str):
                 except Exception:
                     continue
             runtime_state["center_offsets"] = safe_center
+        depth_cal = data.get("depth_calibration")
+        if isinstance(depth_cal, dict):
+            for side in ("right", "left"):
+                d = depth_cal.get(side)
+                if not isinstance(d, dict):
+                    continue
+                out = {}
+                for k in ("neutral", "near", "far"):
+                    v = d.get(k)
+                    if v is None:
+                        out[k] = None
+                    else:
+                        try:
+                            out[k] = float(v)
+                        except Exception:
+                            out[k] = None
+                runtime_state["depth_calibration"][side] = out
 
 
 def save_calibration_to_file(calib_path: str):
@@ -185,6 +298,7 @@ def save_calibration_to_file(calib_path: str):
             "selected_arm": runtime_state["selected_arm"],
             "trims_deg": runtime_state["trims_deg"],
             "center_offsets": runtime_state["center_offsets"],
+            "depth_calibration": runtime_state.get("depth_calibration", {}),
         }
     p = Path(calib_path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +321,64 @@ def pick_hand_landmarks(hands_result, requested_side: str):
     return hands_result.multi_hand_landmarks[0].landmark
 
 
+def split_hand_landmarks_by_side(hands_result, pose_landmarks=None):
+    out = {"left": None, "right": None}
+    if not hands_result.multi_hand_landmarks:
+        return out
+
+    hands = list(hands_result.multi_hand_landmarks)
+    handed = list(hands_result.multi_handedness or [])
+
+    # 1) Try MediaPipe handedness labels first.
+    if handed:
+        for h_lm, h_side in zip(hands, handed):
+            lbl = str(h_side.classification[0].label).strip().lower()
+            if lbl in out and out[lbl] is None:
+                out[lbl] = h_lm.landmark
+
+    # 2) Fallback: assign by nearest pose wrist in image space.
+    if pose_landmarks is not None and (out["left"] is None or out["right"] is None):
+        candidates = []
+        for h_lm in hands:
+            w = h_lm.landmark[0]
+            candidates.append((h_lm.landmark, float(w.x), float(w.y)))
+
+        if candidates:
+            lw = pose_landmarks[15]
+            rw = pose_landmarks[16]
+            left_w = np.array([float(lw.x), float(lw.y)], dtype=float)
+            right_w = np.array([float(rw.x), float(rw.y)], dtype=float)
+
+            # Greedy nearest assignment without duplicating one hand to both sides.
+            used = set()
+            for side_name, side_w in (("left", left_w), ("right", right_w)):
+                if out[side_name] is not None:
+                    continue
+                best_idx = None
+                best_d = 1e9
+                for i, (_, x, y) in enumerate(candidates):
+                    if i in used:
+                        continue
+                    d = float(np.linalg.norm(np.array([x, y]) - side_w))
+                    if d < best_d:
+                        best_d = d
+                        best_idx = i
+                if best_idx is not None:
+                    used.add(best_idx)
+                    out[side_name] = candidates[best_idx][0]
+
+    # 3) Last resort: fill any missing side with the first available hand.
+    if out["left"] is None and out["right"] is not None:
+        out["left"] = out["right"]
+    if out["right"] is None and out["left"] is not None:
+        out["right"] = out["left"]
+    if out["left"] is None and hands:
+        out["left"] = hands[0].landmark
+    if out["right"] is None and hands:
+        out["right"] = hands[0].landmark
+    return out
+
+
 def remap_side_for_mirrored_input(side: str, mirrored_input: bool = True) -> str:
     s = str(side).strip().lower()
     if s not in ("left", "right"):
@@ -216,24 +388,92 @@ def remap_side_for_mirrored_input(side: str, mirrored_input: bool = True) -> str
     return "left" if s == "right" else "right"
 
 
-def draw_selected_arm(frame, pose_landmarks, arm_side: str):
+def _lm_xy(frame, lm):
+    h, w = frame.shape[:2]
+    return int(lm.x * w), int(lm.y * h), float(getattr(lm, "visibility", 1.0))
+
+
+def draw_arm_guides(frame, pose_landmarks, hand_landmarks, arm_side: str):
     if pose_landmarks is None:
         return
-    ids = (11, 13, 15) if arm_side.lower() == "left" else (12, 14, 16)
-    h, w = frame.shape[:2]
-    pts = []
-    for idx in ids:
-        lm = pose_landmarks[idx]
-        pts.append((int(lm.x * w), int(lm.y * h), float(getattr(lm, "visibility", 1.0))))
+    side = arm_side.lower()
+    shoulder_idx, elbow_idx, wrist_idx = (11, 13, 15) if side == "left" else (12, 14, 16)
+    shoulder_l = pose_landmarks[11]
+    shoulder_r = pose_landmarks[12]
+    elbow = pose_landmarks[elbow_idx]
+    wrist_pose = pose_landmarks[wrist_idx]
 
-    for i in range(2):
-        p0 = pts[i]
-        p1 = pts[i + 1]
-        if p0[2] > 0.35 and p1[2] > 0.35:
-            cv2.line(frame, (p0[0], p0[1]), (p1[0], p1[1]), (0, 210, 255), 4, cv2.LINE_AA)
-    for p in pts:
-        if p[2] > 0.35:
-            cv2.circle(frame, (p[0], p[1]), 7, (255, 255, 255), -1, cv2.LINE_AA)
+    sh_l = _lm_xy(frame, shoulder_l)
+    sh_r = _lm_xy(frame, shoulder_r)
+    el = _lm_xy(frame, elbow)
+    wr = _lm_xy(frame, wrist_pose)
+
+    # 1) Required arm lines: shoulder->elbow and elbow->wrist.
+    if el[2] > 0.3 and wr[2] > 0.3:
+        cv2.line(frame, (el[0], el[1]), (wr[0], wr[1]), (0, 220, 255), 4, cv2.LINE_AA)
+    src_sh = sh_l if side == "left" else sh_r
+    if src_sh[2] > 0.3 and el[2] > 0.3:
+        cv2.line(frame, (src_sh[0], src_sh[1]), (el[0], el[1]), (0, 220, 255), 4, cv2.LINE_AA)
+
+    # 2) Required POIs: 2 shoulders, 1 elbow, 2 wrists, 1 thumb.
+    poi = [
+        (sh_l[0], sh_l[1]),  # shoulder 1
+        (sh_r[0], sh_r[1]),  # shoulder 2
+        (el[0], el[1]),      # elbow
+        (wr[0], wr[1]),      # wrist from pose
+    ]
+    if hand_landmarks is not None:
+        h, w = frame.shape[:2]
+        wrist_hand = hand_landmarks[0]
+        thumb_tip = hand_landmarks[4]
+        poi.append((int(wrist_hand.x * w), int(wrist_hand.y * h)))  # wrist from hand model
+        poi.append((int(thumb_tip.x * w), int(thumb_tip.y * h)))    # thumb
+    else:
+        # Keep consistent point count even when hand temporarily drops.
+        poi.append((wr[0] + 8, wr[1] + 8))
+        poi.append((wr[0] + 16, wr[1] + 16))
+
+    for i, p in enumerate(poi):
+        color = (255, 255, 255) if i < 4 else (80, 255, 160)
+        radius = 8 if i == (0 if side == "left" else 1) else 6
+        cv2.circle(frame, p, radius, color, -1, cv2.LINE_AA)
+
+    # Mapping annotation requested by user:
+    # Shoulder->Elbow line controls M1 (horizontal) and M2 (vertical).
+    # Elbow->Wrist line controls M3 (vertical).
+    m_se = ((src_sh[0] + el[0]) // 2, (src_sh[1] + el[1]) // 2)
+    m_ew = ((el[0] + wr[0]) // 2, (el[1] + wr[1]) // 2)
+    cv2.putText(frame, "M1 horiz / M2 vert", m_se, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 230, 255), 1, cv2.LINE_AA)
+    cv2.putText(frame, "M3 vert", m_ew, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 230, 255), 1, cv2.LINE_AA)
+    cv2.putText(
+        frame,
+        "BASE",
+        (src_sh[0] + 10, src_sh[1] - 10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+
+
+def draw_palm_only(frame, hand_landmarks):
+    if hand_landmarks is None:
+        return
+    h, w = frame.shape[:2]
+    pts = {}
+    ids = [0, 5, 9, 13, 17]
+    for idx in ids:
+        lm = hand_landmarks[idx]
+        pts[idx] = (int(lm.x * w), int(lm.y * h))
+
+    palm_edges = [(0, 5), (5, 9), (9, 13), (13, 17), (17, 0), (0, 9), (5, 17)]
+    for a, b in palm_edges:
+        if a in pts and b in pts:
+            cv2.line(frame, pts[a], pts[b], (0, 235, 180), 3, cv2.LINE_AA)
+    for idx in ids:
+        if idx in pts:
+            cv2.circle(frame, pts[idx], 4, (255, 255, 255), -1, cv2.LINE_AA)
 
 
 def _draw_overlay(frame, motors, pose_ok, hand_ok, selected_arm, safety_snapshot=None, quality=None):
@@ -264,21 +504,198 @@ def _draw_overlay(frame, motors, pose_ok, hand_ok, selected_arm, safety_snapshot
         )
 
 
+def _to_rad(d: float) -> float:
+    return float(d) * math.pi / 180.0
+
+
+def _arm_wrist_point(motors_deg, base_xyz):
+    # Lightweight kinematic proxy for collision checks.
+    m1, m2, m3 = [float(v) for v in motors_deg[:3]]
+    yaw = _to_rad(m1)
+    sh = _to_rad(m2)
+    el = _to_rad(m3)
+    l1 = 0.34
+    l2 = 0.33
+    sx, sy, sz = base_xyz
+
+    d1 = (
+        math.cos(yaw) * math.cos(sh),
+        math.sin(sh),
+        math.sin(yaw) * math.cos(sh),
+    )
+    ex = sx + l1 * d1[0]
+    ey = sy + l1 * d1[1]
+    ez = sz + l1 * d1[2]
+
+    fore_pitch = sh - el
+    d2 = (
+        math.cos(yaw) * math.cos(fore_pitch),
+        math.sin(fore_pitch),
+        math.sin(yaw) * math.cos(fore_pitch),
+    )
+    wx = ex + l2 * d2[0]
+    wy = ey + l2 * d2[1]
+    wz = ez + l2 * d2[2]
+    return (wx, wy, wz)
+
+
+def _dist3(a, b):
+    return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)
+
+
+def collision_limit_guard(
+    right_motors,
+    left_motors,
+    prev_right,
+    prev_left,
+    min_sep_m=0.16,
+):
+    # Two-arm soft collision: block only motions that push wrists deeper into collision.
+    right_base = (0.24, 0.06, 0.0)
+    left_base = (-0.24, 0.06, 0.0)
+    wr_new = _arm_wrist_point(right_motors, right_base)
+    wl_new = _arm_wrist_point(left_motors, left_base)
+    wr_prev = _arm_wrist_point(prev_right, right_base)
+    wl_prev = _arm_wrist_point(prev_left, left_base)
+
+    d_new = _dist3(wr_new, wl_new)
+    d_prev = _dist3(wr_prev, wl_prev)
+    blocked = d_new < float(min_sep_m) and d_new < d_prev
+    if blocked:
+        return prev_right[:], prev_left[:], True
+    return right_motors, left_motors, False
+
+
+class OneEuroFilter:
+    def __init__(self, min_cutoff=1.2, beta=0.03, d_cutoff=1.0):
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.d_cutoff = float(d_cutoff)
+        self.x_prev = None
+        self.dx_prev = 0.0
+        self.t_prev = None
+
+    @staticmethod
+    def _alpha(cutoff, dt):
+        tau = 1.0 / (2.0 * math.pi * max(1e-6, cutoff))
+        return 1.0 / (1.0 + tau / max(1e-6, dt))
+
+    def filter(self, x: float, t: float) -> float:
+        x = float(x)
+        if self.x_prev is None:
+            self.x_prev = x
+            self.t_prev = float(t)
+            return x
+        dt = max(1e-6, float(t) - float(self.t_prev))
+        dx = (x - self.x_prev) / dt
+        a_d = self._alpha(self.d_cutoff, dt)
+        dx_hat = a_d * dx + (1.0 - a_d) * self.dx_prev
+        cutoff = self.min_cutoff + self.beta * abs(dx_hat)
+        a = self._alpha(cutoff, dt)
+        x_hat = a * x + (1.0 - a) * self.x_prev
+        self.x_prev = x_hat
+        self.dx_prev = dx_hat
+        self.t_prev = float(t)
+        return x_hat
+
+
+def depth_components(pose_landmarks, hand_landmarks, arm_side: str):
+    if pose_landmarks is None:
+        return None
+    side = arm_side.lower()
+    shoulder_idx, wrist_idx = (11, 15) if side == "left" else (12, 16)
+    try:
+        shoulder = pose_landmarks[shoulder_idx]
+        wrist_pose = pose_landmarks[wrist_idx]
+    except Exception:
+        return None
+    if getattr(shoulder, "visibility", 0.0) < 0.25 or getattr(wrist_pose, "visibility", 0.0) < 0.25:
+        return None
+
+    sw_scale = math.hypot(float(wrist_pose.x) - float(shoulder.x), float(wrist_pose.y) - float(shoulder.y))
+    mp_z = -float(wrist_pose.z)
+    palm_scale = 0.0
+    if hand_landmarks is not None:
+        try:
+            idx = hand_landmarks[5]
+            pky = hand_landmarks[17]
+            palm_scale = math.hypot(float(idx.x) - float(pky.x), float(idx.y) - float(pky.y))
+        except Exception:
+            palm_scale = 0.0
+
+    return {
+        "mediapipe_z": float(mp_z),
+        "shoulder_wrist_scale": float(sw_scale),
+        "palm_scale": float(palm_scale),
+    }
+
+
+def normalize_depth_with_calibration(depth_raw: float, depth_calib: dict):
+    neutral = depth_calib.get("neutral")
+    near = depth_calib.get("near")
+    far = depth_calib.get("far")
+    if near is not None and far is not None and abs(float(near) - float(far)) > 1e-6:
+        num = float(depth_raw) - float(far)
+        den = float(near) - float(far)
+        norm = clamp(num / den, 0.0, 1.0)
+    elif neutral is not None:
+        # fallback symmetric normalization around neutral
+        norm = clamp(0.5 + (float(depth_raw) - float(neutral)) * 1.8, 0.0, 1.0)
+    else:
+        norm = 0.5
+    forward = clamp((norm - 0.5) * 2.0, -1.0, 1.0)
+    return float(norm), float(forward)
+
+
 def camera_worker(camera_idx: int, config_path: str):
-    global safety_supervisor, gesture_engine
+    global safety_supervisor, right_safety_supervisor, left_safety_supervisor, gesture_engine
     cfg = load_config(config_path)
-    mapper = ArmFollowMapper(cfg)
-    safety_supervisor = SafetySupervisor(cfg)
+    mapper_right = ArmFollowMapper(cfg)
+    mapper_left = ArmFollowMapper(cfg)
+    right_safety = SafetySupervisor(cfg)
+    left_safety = SafetySupervisor(cfg)
+    right_safety_supervisor = right_safety
+    left_safety_supervisor = left_safety
+    safety_supervisor = right_safety
     gesture_engine = GestureMacroEngine(cfg)
     metrics = RuntimeMetrics(window=int(cfg.get("metrics_window", 120)))
+    draw_camera_overlay = bool(cfg.get("draw_camera_overlay", False))
+    draw_pose_overlay = bool(cfg.get("draw_pose_overlay", draw_camera_overlay))
+    draw_hand_landmarks = bool(cfg.get("draw_hand_landmarks", True))
+    draw_text_overlay = bool(cfg.get("draw_text_overlay", draw_camera_overlay))
+    mirror_side_labels = bool(cfg.get("mirror_side_labels", False))
+    min_collision_sep_m = float(cfg.get("collision_min_sep_m", 0.16))
+    depth_cfg = cfg.get("depth_fusion", {}) or {}
+    depth_enabled = bool(depth_cfg.get("enabled", True))
+    depth_w = depth_cfg.get("weights", {}) or {}
+    w_mp = float(depth_w.get("mediapipe_z", 0.45))
+    w_sw = float(depth_w.get("shoulder_wrist_scale", 0.35))
+    w_ps = float(depth_w.get("palm_scale", 0.20))
+    ws = max(1e-6, w_mp + w_sw + w_ps)
+    w_mp, w_sw, w_ps = w_mp / ws, w_sw / ws, w_ps / ws
+    oe = depth_cfg.get("one_euro", {}) or {}
+    depth_filter_right = OneEuroFilter(
+        min_cutoff=float(oe.get("min_cutoff", 1.2)),
+        beta=float(oe.get("beta", 0.03)),
+        d_cutoff=float(oe.get("d_cutoff", 1.0)),
+    )
+    depth_filter_left = OneEuroFilter(
+        min_cutoff=float(oe.get("min_cutoff", 1.2)),
+        beta=float(oe.get("beta", 0.03)),
+        d_cutoff=float(oe.get("d_cutoff", 1.0)),
+    )
+    depth_shoulder_gain = float(depth_cfg.get("shoulder_gain_deg", 8.0))
+    depth_elbow_gain = float(depth_cfg.get("elbow_gain_deg", -20.0))
 
     pose_vis_min = float(cfg.get("pose_visibility_threshold", 0.55))
     quality_low_light = float(cfg.get("quality_low_light_threshold", 45.0))
     quality_blur = float(cfg.get("quality_blur_threshold", 35.0))
     with state.lock:
         for k, v in runtime_state["center_offsets"].items():
-            if k in mapper.center_offsets:
-                mapper.center_offsets[k] = float(v)
+            if k in mapper_right.center_offsets:
+                mapper_right.center_offsets[k] = float(v)
+            if k in mapper_left.center_offsets:
+                mapper_left.center_offsets[k] = float(v)
     mp_pose, mp_hands, mp_draw, mp_style = resolve_mediapipe_modules()
 
     cap = cv2.VideoCapture(camera_idx, cv2.CAP_DSHOW)
@@ -296,12 +713,14 @@ def camera_worker(camera_idx: int, config_path: str):
         min_tracking_confidence=0.6,
     ) as pose, mp_hands.Hands(
         static_image_mode=False,
-        max_num_hands=1,
+        max_num_hands=2,
         model_complexity=1,
         min_detection_confidence=0.6,
         min_tracking_confidence=0.6,
     ) as hands:
         prev_loop = time.time()
+        prev_right = mapper_right.home[:]
+        prev_left = mapper_left.home[:]
         while state.running:
             t_loop_start = time.time()
             ok, frame = cap.read()
@@ -324,77 +743,233 @@ def camera_worker(camera_idx: int, config_path: str):
                 selected_arm = runtime_state["selected_arm"]
                 trims = runtime_state["trims_deg"][:]
                 wizard_step = runtime_state["wizard_step"]
+                reset_request = state.reset_request
+                depth_req = dict(state.depth_capture_request)
+                depth_cal = {
+                    "right": dict(runtime_state.get("depth_calibration", {}).get("right", {})),
+                    "left": dict(runtime_state.get("depth_calibration", {}).get("left", {})),
+                }
 
-            # MediaPipe runs on a mirrored selfie frame, so semantic left/right
-            # can be inverted relative to the user's physical left/right.
-            model_arm_side = remap_side_for_mirrored_input(selected_arm, mirrored_input=True)
+            model_right_side = remap_side_for_mirrored_input("right", mirrored_input=mirror_side_labels)
+            model_left_side = remap_side_for_mirrored_input("left", mirrored_input=mirror_side_labels)
 
             pose_landmarks = (
                 pose_res.pose_landmarks.landmark if pose_res.pose_landmarks else None
             )
-            hand_landmarks = pick_hand_landmarks(hands_res, requested_side=model_arm_side)
+            hands_by_side = split_hand_landmarks_by_side(hands_res, pose_landmarks=pose_landmarks)
+            hand_right = hands_by_side.get(model_right_side)
+            hand_left = hands_by_side.get(model_left_side)
 
-            features, pose_ok, hand_ok, human_arm_world = extract_arm_features(
+            features_right, pose_ok_right, hand_ok_right, human_arm_world_right = extract_arm_features(
                 pose_landmarks=pose_landmarks,
-                hand_landmarks=hand_landmarks,
-                arm_side=model_arm_side,
+                hand_landmarks=hand_right,
+                arm_side=model_right_side,
+                pose_vis_min=pose_vis_min,
+            )
+            features_left, pose_ok_left, hand_ok_left, human_arm_world_left = extract_arm_features(
+                pose_landmarks=pose_landmarks,
+                hand_landmarks=hand_left,
+                arm_side=model_left_side,
                 pose_vis_min=pose_vis_min,
             )
 
+            depth_debug_right = {}
+            depth_debug_left = {}
+            now_ts = time.time()
+            if depth_enabled:
+                comps_r = depth_components(pose_landmarks, hand_right, model_right_side)
+                comps_l = depth_components(pose_landmarks, hand_left, model_left_side)
+
+                if comps_r is not None:
+                    raw_r = (
+                        w_mp * comps_r["mediapipe_z"]
+                        + w_sw * comps_r["shoulder_wrist_scale"]
+                        + w_ps * comps_r["palm_scale"]
+                    )
+                    filt_r = depth_filter_right.filter(raw_r, now_ts)
+                    if depth_req.get("right") in ("neutral", "near", "far") and hand_ok_right:
+                        with state.lock:
+                            runtime_state["depth_calibration"]["right"][depth_req["right"]] = float(filt_r)
+                            state.depth_capture_request["right"] = ""
+                            depth_cal["right"] = dict(runtime_state["depth_calibration"]["right"])
+                    norm_r, forward_r = normalize_depth_with_calibration(filt_r, depth_cal["right"])
+                    features_right["depth_norm"] = float(norm_r)
+                    features_right["depth_forward"] = float(forward_r)
+                    features_right["shoulder_pitch"] = float(features_right.get("shoulder_pitch", 0.0)) + (
+                        depth_shoulder_gain * forward_r
+                    )
+                    features_right["elbow_bend"] = float(features_right.get("elbow_bend", 0.0)) + (
+                        depth_elbow_gain * forward_r
+                    )
+                    fr = cfg.get("feature_ranges", {})
+                    if "shoulder_pitch" in fr:
+                        features_right["shoulder_pitch"] = clamp(
+                            features_right["shoulder_pitch"],
+                            float(fr["shoulder_pitch"]["min"]),
+                            float(fr["shoulder_pitch"]["max"]),
+                        )
+                    if "elbow_bend" in fr:
+                        features_right["elbow_bend"] = clamp(
+                            features_right["elbow_bend"],
+                            float(fr["elbow_bend"]["min"]),
+                            float(fr["elbow_bend"]["max"]),
+                        )
+                    depth_debug_right = {
+                        "raw": float(raw_r),
+                        "filtered": float(filt_r),
+                        "norm": float(norm_r),
+                        "forward": float(forward_r),
+                        "components": comps_r,
+                        "calibration": depth_cal["right"],
+                    }
+
+                if comps_l is not None:
+                    raw_l = (
+                        w_mp * comps_l["mediapipe_z"]
+                        + w_sw * comps_l["shoulder_wrist_scale"]
+                        + w_ps * comps_l["palm_scale"]
+                    )
+                    filt_l = depth_filter_left.filter(raw_l, now_ts)
+                    if depth_req.get("left") in ("neutral", "near", "far") and hand_ok_left:
+                        with state.lock:
+                            runtime_state["depth_calibration"]["left"][depth_req["left"]] = float(filt_l)
+                            state.depth_capture_request["left"] = ""
+                            depth_cal["left"] = dict(runtime_state["depth_calibration"]["left"])
+                    norm_l, forward_l = normalize_depth_with_calibration(filt_l, depth_cal["left"])
+                    features_left["depth_norm"] = float(norm_l)
+                    features_left["depth_forward"] = float(forward_l)
+                    features_left["shoulder_pitch"] = float(features_left.get("shoulder_pitch", 0.0)) + (
+                        depth_shoulder_gain * forward_l
+                    )
+                    features_left["elbow_bend"] = float(features_left.get("elbow_bend", 0.0)) + (
+                        depth_elbow_gain * forward_l
+                    )
+                    fr = cfg.get("feature_ranges", {})
+                    if "shoulder_pitch" in fr:
+                        features_left["shoulder_pitch"] = clamp(
+                            features_left["shoulder_pitch"],
+                            float(fr["shoulder_pitch"]["min"]),
+                            float(fr["shoulder_pitch"]["max"]),
+                        )
+                    if "elbow_bend" in fr:
+                        features_left["elbow_bend"] = clamp(
+                            features_left["elbow_bend"],
+                            float(fr["elbow_bend"]["min"]),
+                            float(fr["elbow_bend"]["max"]),
+                        )
+                    depth_debug_left = {
+                        "raw": float(raw_l),
+                        "filtered": float(filt_l),
+                        "norm": float(norm_l),
+                        "forward": float(forward_l),
+                        "components": comps_l,
+                        "calibration": depth_cal["left"],
+                    }
+
             macro_event = ""
             if gesture_engine is not None:
-                macro = gesture_engine.process(hand_landmarks)
+                selected_hand_landmarks = hand_right if selected_arm == "right" else hand_left
+                macro = gesture_engine.process(selected_hand_landmarks)
                 if macro:
-                    safety_supervisor.trigger_macro(macro)
+                    right_safety.trigger_macro(macro)
+                    left_safety.trigger_macro(macro)
                     macro_event = macro
 
             with state.lock:
-                if state.calibrate_request and pose_ok:
-                    mapper.calibrate(features)
-                    runtime_state["center_offsets"] = dict(mapper.center_offsets)
-                    state.calibrate_request = False
+                if state.calibrate_request:
+                    if selected_arm == "right" and pose_ok_right:
+                        mapper_right.calibrate(features_right)
+                        runtime_state["center_offsets"] = dict(mapper_right.center_offsets)
+                        state.calibrate_request = False
+                    elif selected_arm == "left" and pose_ok_left:
+                        mapper_left.calibrate(features_left)
+                        runtime_state["center_offsets"] = dict(mapper_left.center_offsets)
+                        state.calibrate_request = False
+                if reset_request:
+                    state.reset_request = False
 
-            mapped_motors = mapper.map(features=features, pose_ok=pose_ok, runtime_trims=trims)
+            if reset_request:
+                mapper_right.prev = mapper_right.home[:]
+                mapper_left.prev = mapper_left.home[:]
+                right_safety.last_safe = mapper_right.home[:]
+                left_safety.last_safe = mapper_left.home[:]
+                right_safety.lost_count = 0
+                left_safety.lost_count = 0
+
+            mapped_right = mapper_right.map(
+                features=features_right,
+                pose_ok=pose_ok_right,
+                runtime_trims=trims,
+            )
+            mapped_left = mapper_left.map(
+                features=features_left,
+                pose_ok=pose_ok_left,
+                runtime_trims=trims,
+            )
 
             playback = trajectory_manager.sample_playback()
             if playback is not None:
-                mapped_motors = playback
+                if selected_arm == "right":
+                    mapped_right = playback
+                else:
+                    mapped_left = playback
 
-            safe_motors = safety_supervisor.process(
-                target_motors=mapped_motors,
-                pose_ok=pose_ok,
-                hand_ok=hand_ok,
+            safe_right = right_safety.process(
+                target_motors=mapped_right,
+                pose_ok=pose_ok_right,
+                hand_ok=hand_ok_right,
                 quality=quality,
             )
+            safe_left = left_safety.process(
+                target_motors=mapped_left,
+                pose_ok=pose_ok_left,
+                hand_ok=hand_ok_left,
+                quality=quality,
+            )
+            safe_right, safe_left, collision_blocked = collision_limit_guard(
+                safe_right,
+                safe_left,
+                prev_right=prev_right,
+                prev_left=prev_left,
+                min_sep_m=min_collision_sep_m,
+            )
+            prev_right = safe_right[:]
+            prev_left = safe_left[:]
+
+            selected_safe = safe_right if selected_arm == "right" else safe_left
+            selected_pose_ok = pose_ok_right if selected_arm == "right" else pose_ok_left
+            selected_hand_ok = hand_ok_right if selected_arm == "right" else hand_ok_left
 
             if trajectory_manager.recording:
-                trajectory_manager.append(safe_motors)
+                trajectory_manager.append(selected_safe)
 
             if ros2_bridge.connected:
-                ros2_bridge.publish_joint_targets(safe_motors)
+                ros2_bridge.publish_joint_targets(selected_safe)
 
-            draw_selected_arm(frame, pose_landmarks, model_arm_side)
-            if hand_landmarks is not None:
-                class _HL:
-                    def __init__(self, landmark):
-                        self.landmark = landmark
-
-                mp_draw.draw_landmarks(
+            if draw_pose_overlay:
+                draw_arm_guides(frame, pose_landmarks, hand_right, model_right_side)
+                draw_arm_guides(frame, pose_landmarks, hand_left, model_left_side)
+            if draw_hand_landmarks and hands_res.multi_hand_landmarks:
+                for h_lm in hands_res.multi_hand_landmarks:
+                    mp_draw.draw_landmarks(
+                        frame,
+                        h_lm,
+                        mp_hands.HAND_CONNECTIONS,
+                        mp_style.get_default_hand_landmarks_style(),
+                        mp_style.get_default_hand_connections_style(),
+                    )
+            if draw_text_overlay:
+                _draw_overlay(
                     frame,
-                    _HL(hand_landmarks),
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_style.get_default_hand_landmarks_style(),
-                    mp_style.get_default_hand_connections_style(),
+                    selected_safe,
+                    selected_pose_ok,
+                    selected_hand_ok,
+                    selected_arm,
+                    safety_snapshot=(
+                        right_safety.snapshot() if selected_arm == "right" else left_safety.snapshot()
+                    ),
+                    quality=quality,
                 )
-            _draw_overlay(
-                frame,
-                safe_motors,
-                pose_ok,
-                hand_ok,
-                selected_arm,
-                safety_snapshot=safety_supervisor.snapshot(),
-                quality=quality,
-            )
 
             ok_jpg, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
             if not ok_jpg:
@@ -408,29 +983,51 @@ def camera_worker(camera_idx: int, config_path: str):
             metrics.update(
                 dt_s=dt_s,
                 proc_ms=proc_ms,
-                motors=safe_motors,
-                pose_ok=pose_ok,
+                motors=selected_safe,
+                pose_ok=selected_pose_ok,
                 quality_score=quality["quality_score"],
             )
 
             payload = {
                 "timestamp": time.time(),
                 "frame_b64": frame_b64,
-                "motors_deg": [round(v, 3) for v in safe_motors],
-                "pose_detected": bool(pose_ok),
-                "hand_detected": bool(hand_ok),
+                "motors_deg": [round(v, 3) for v in selected_safe],
+                "motors_right_deg": [round(v, 3) for v in safe_right],
+                "motors_left_deg": [round(v, 3) for v in safe_left],
+                "pose_detected": bool(selected_pose_ok),
+                "hand_detected": bool(selected_hand_ok),
+                "pose_detected_right": bool(pose_ok_right),
+                "pose_detected_left": bool(pose_ok_left),
+                "hand_detected_right": bool(hand_ok_right),
+                "hand_detected_left": bool(hand_ok_left),
                 "selected_arm": selected_arm,
                 "trims_deg": trims,
-                "center_offsets": dict(mapper.center_offsets),
-                "human_arm_world": human_arm_world,
+                "center_offsets": dict(
+                    mapper_right.center_offsets if selected_arm == "right" else mapper_left.center_offsets
+                ),
+                "human_arm_world": (
+                    human_arm_world_right if selected_arm == "right" else human_arm_world_left
+                ),
+                "human_arm_world_right": human_arm_world_right,
+                "human_arm_world_left": human_arm_world_left,
                 "guide": GUIDE,
                 "status": "running",
-                "macro_event": macro_event or safety_supervisor.snapshot().get("last_macro", ""),
+                "macro_event": macro_event
+                or (
+                    right_safety.snapshot().get("last_macro", "")
+                    if selected_arm == "right"
+                    else left_safety.snapshot().get("last_macro", "")
+                ),
                 "quality": quality,
                 "metrics": metrics.snapshot(),
-                "safety": safety_supervisor.snapshot(),
+                "safety": right_safety.snapshot() if selected_arm == "right" else left_safety.snapshot(),
+                "safety_right": right_safety.snapshot(),
+                "safety_left": left_safety.snapshot(),
                 "trajectory": trajectory_manager.snapshot(),
                 "wizard_step": wizard_step,
+                "collision_blocked": bool(collision_blocked),
+                "depth_right": depth_debug_right,
+                "depth_left": depth_debug_left,
             }
             for i, v in enumerate(payload["motors_deg"], start=1):
                 payload[f"motor_{i}"] = v
@@ -443,13 +1040,10 @@ def camera_worker(camera_idx: int, config_path: str):
     cap.release()
 
 
-app = FastAPI(title="Clutch Web Teleop V3")
-app.mount("/assets", StaticFiles(directory=str(ROOT / "assets")), name="assets")
-
-
-@app.on_event("startup")
-async def on_startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global worker_thread
+    state.running = True
     if worker_thread is None or not worker_thread.is_alive():
         worker_thread = threading.Thread(
             target=camera_worker,
@@ -460,11 +1054,15 @@ async def on_startup():
             daemon=True,
         )
         worker_thread.start()
+    try:
+        yield
+    finally:
+        state.running = False
 
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    state.running = False
+app = FastAPI(title="Clutch Web Teleop V3", lifespan=lifespan)
+app.mount("/assets", StaticFiles(directory=str(ROOT / "assets")), name="assets")
+app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -479,24 +1077,66 @@ async def index():
     return HTMLResponse(INDEX_HTML.read_text(encoding="utf-8"))
 
 
+@app.get("/auki", response_class=HTMLResponse)
+async def auki_index():
+    return HTMLResponse(AUKI_INDEX_HTML.read_text(encoding="utf-8"))
+
+
+@app.get("/auki-demo", response_class=HTMLResponse)
+async def auki_demo():
+    return HTMLResponse(AUKI_DEMO_HTML.read_text(encoding="utf-8"))
+
+
 @app.get("/api/guide")
 async def api_guide():
     return JSONResponse({"guide": GUIDE})
 
 
+@app.get("/api/health")
+async def api_health():
+    with state.lock:
+        latest = dict(state.latest)
+    safety = safety_supervisor.snapshot() if safety_supervisor else {}
+    safety_r = right_safety_supervisor.snapshot() if right_safety_supervisor else {}
+    safety_l = left_safety_supervisor.snapshot() if left_safety_supervisor else {}
+    return JSONResponse(
+        {
+            "ok": True,
+            "status": latest.get("status", "unknown"),
+            "pose_detected": bool(latest.get("pose_detected", False)),
+            "hand_detected": bool(latest.get("hand_detected", False)),
+            "pose_detected_right": bool(latest.get("pose_detected_right", False)),
+            "pose_detected_left": bool(latest.get("pose_detected_left", False)),
+            "hand_detected_right": bool(latest.get("hand_detected_right", False)),
+            "hand_detected_left": bool(latest.get("hand_detected_left", False)),
+            "selected_arm": runtime_state.get("selected_arm", "right"),
+            "safety": safety,
+            "safety_right": safety_r,
+            "safety_left": safety_l,
+        }
+    )
+
+
 @app.get("/api/settings")
 async def api_settings_get():
     with state.lock:
+        sel = runtime_state["selected_arm"]
         payload = {
-            "selected_arm": runtime_state["selected_arm"],
+            "selected_arm": sel,
             "trims_deg": runtime_state["trims_deg"],
+            "motor_ranges": runtime_state["motor_ranges"],
             "center_offsets": runtime_state["center_offsets"],
+            "depth_calibration": runtime_state.get("depth_calibration", {}),
             "calibration_file": runtime_state["calibration_file"],
             "wizard_step": runtime_state["wizard_step"],
             "wizard_steps": runtime_state["wizard_steps"],
         }
     payload["trajectory"] = trajectory_manager.snapshot()
-    payload["safety"] = safety_supervisor.snapshot() if safety_supervisor else {}
+    payload["safety"] = (
+        right_safety_supervisor.snapshot() if sel == "right" else left_safety_supervisor.snapshot()
+    ) if (right_safety_supervisor and left_safety_supervisor) else {}
+    payload["safety_right"] = right_safety_supervisor.snapshot() if right_safety_supervisor else {}
+    payload["safety_left"] = left_safety_supervisor.snapshot() if left_safety_supervisor else {}
     return JSONResponse(payload)
 
 
@@ -528,29 +1168,64 @@ async def api_trims_set(payload: dict):
 @app.get("/api/safety")
 async def api_safety_get():
     snap = safety_supervisor.snapshot() if safety_supervisor is not None else {}
-    return JSONResponse({"ok": True, "safety": snap})
+    snap_r = right_safety_supervisor.snapshot() if right_safety_supervisor is not None else {}
+    snap_l = left_safety_supervisor.snapshot() if left_safety_supervisor is not None else {}
+    return JSONResponse({"ok": True, "safety": snap, "safety_right": snap_r, "safety_left": snap_l})
 
 
 @app.post("/api/safety")
 async def api_safety_set(payload: dict):
-    if safety_supervisor is None:
+    if right_safety_supervisor is None or left_safety_supervisor is None:
         return JSONResponse({"ok": False, "error": "safety_not_ready"}, status_code=503)
     action = str(payload.get("action", "")).strip().lower()
+    safety_targets = [right_safety_supervisor, left_safety_supervisor]
     if action == "toggle_freeze":
-        safety_supervisor.trigger_macro("toggle_freeze")
+        for s in safety_targets:
+            s.trigger_macro("toggle_freeze")
     elif action == "toggle_estop":
-        safety_supervisor.trigger_macro("toggle_estop")
+        for s in safety_targets:
+            s.trigger_macro("toggle_estop")
     elif action == "clear_estop":
-        safety_supervisor.clear_estop()
+        for s in safety_targets:
+            s.clear_estop()
     elif action == "home":
-        safety_supervisor.trigger_macro("home")
+        for s in safety_targets:
+            s.trigger_macro("home")
     elif action == "freeze_on":
-        safety_supervisor.set_freeze(True)
+        for s in safety_targets:
+            s.set_freeze(True)
     elif action == "freeze_off":
-        safety_supervisor.set_freeze(False)
+        for s in safety_targets:
+            s.set_freeze(False)
     else:
         return JSONResponse({"ok": False, "error": "unknown_action"}, status_code=400)
-    return JSONResponse({"ok": True, "safety": safety_supervisor.snapshot()})
+    sel = runtime_state.get("selected_arm", "right")
+    selected_snap = (
+        right_safety_supervisor.snapshot() if sel == "right" else left_safety_supervisor.snapshot()
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "safety": selected_snap,
+            "safety_right": right_safety_supervisor.snapshot(),
+            "safety_left": left_safety_supervisor.snapshot(),
+        }
+    )
+
+
+@app.post("/api/reset")
+async def api_reset():
+    if right_safety_supervisor is not None:
+        right_safety_supervisor.set_freeze(False)
+        right_safety_supervisor.clear_estop()
+        right_safety_supervisor.trigger_macro("home")
+    if left_safety_supervisor is not None:
+        left_safety_supervisor.set_freeze(False)
+        left_safety_supervisor.clear_estop()
+        left_safety_supervisor.trigger_macro("home")
+    with state.lock:
+        state.reset_request = True
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/trajectory")
@@ -684,6 +1359,43 @@ async def api_calibrate():
     return JSONResponse({"ok": True, "message": "Calibration requested."})
 
 
+@app.get("/api/depth_calibration")
+async def api_depth_calibration_get():
+    with state.lock:
+        out = {
+            "selected_arm": runtime_state["selected_arm"],
+            "depth_calibration": runtime_state.get("depth_calibration", {}),
+            "pending_capture": dict(state.depth_capture_request),
+        }
+    return JSONResponse({"ok": True, **out})
+
+
+@app.post("/api/depth_calibration")
+async def api_depth_calibration_set(payload: dict):
+    action = str(payload.get("action", "")).strip().lower()
+    side = str(payload.get("side", "")).strip().lower()
+    with state.lock:
+        if side not in ("left", "right"):
+            side = runtime_state["selected_arm"]
+        if action in ("capture_neutral", "capture_near", "capture_far"):
+            key = action.split("_", 1)[1]
+            state.depth_capture_request[side] = key
+            out = {
+                "depth_calibration": runtime_state.get("depth_calibration", {}),
+                "pending_capture": dict(state.depth_capture_request),
+            }
+            return JSONResponse({"ok": True, **out})
+        if action == "reset":
+            runtime_state["depth_calibration"][side] = {"neutral": None, "near": None, "far": None}
+            state.depth_capture_request[side] = ""
+            out = {
+                "depth_calibration": runtime_state.get("depth_calibration", {}),
+                "pending_capture": dict(state.depth_capture_request),
+            }
+            return JSONResponse({"ok": True, **out})
+    return JSONResponse({"ok": False, "error": "unknown_action"}, status_code=400)
+
+
 @app.websocket("/ws")
 async def ws_feed(ws: WebSocket):
     await ws.accept()
@@ -733,6 +1445,10 @@ def main():
     runtime_settings["port"] = args.port
     cfg = load_config(runtime_settings["config_path"])
     runtime_state["selected_arm"] = args.arm_side
+    runtime_state["motor_ranges"] = [
+        [float(m.get("min_deg", -180.0)), float(m.get("max_deg", 180.0))]
+        for m in cfg.get("motors", [])
+    ]
     calib_rel = cfg.get("calibration_file", str(ROOT / "calibration.runtime.json"))
     runtime_state["calibration_file"] = str((Path(calib_rel) if Path(calib_rel).is_absolute() else (PROJECT_ROOT / calib_rel)).resolve())
     load_saved_calibration(runtime_state["calibration_file"])
