@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>clutch</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@900&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #c8bfb3; }
+
+    #wordmark {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 0; pointer-events: none;
+    }
+    #wordmark h1 {
+      font-family: 'Unbounded', sans-serif;
+      font-weight: 900;
+      font-size: clamp(80px, 18vw, 220px);
+      color: #fff;
+      text-transform: uppercase;
+      letter-spacing: -0.01em;
+      user-select: none;
+    }
+
+    spline-viewer { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 1; }
+
+    #enter {
+      position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+      z-index: 10; font-family: 'Unbounded', sans-serif; font-size: 11px;
+      font-weight: 900; letter-spacing: 0.2em; text-transform: uppercase;
+      color: rgba(255,255,255,0.6); background: none; border: 1px solid rgba(255,255,255,0.3);
+      padding: 12px 28px; cursor: pointer; transition: all 0.2s;
+    }
+    #enter:hover { color: #fff; border-color: #fff; }
+
+    #badge-cover {
+      position: fixed; bottom: 8px; right: 8px;
+      width: 210px; height: 48px; background: #c8bfb3;
+      z-index: 10; pointer-events: none;
+    }
+  </style>
+  <script type="module" src="https://unpkg.com/@splinetool/viewer@1.9.79/build/spline-viewer.js"></script>
+</head>
+<body>
+  <div id="wordmark"><h1>CLUTCH</h1></div>
+  <spline-viewer url="/static/auki_bundle/scene.spline" background="transparent" events-target="global" hide-logo></spline-viewer>
+  <button id="enter" onclick="location.href='/auki-demo'">Enter Demo</button>
+  <p style="position:fixed;bottom:88px;left:50%;transform:translateX(-50%);z-index:10;font-family:system-ui,sans-serif;font-size:11px;color:rgba(255,255,255,0.45);text-align:center;max-width:90vw">Open <strong style="color:rgba(255,255,255,0.7)">/auki-demo</strong> — full-screen arm · ≡ controls · OUTPUT log</p>
+  <div id="badge-cover"></div>
+</body>
+</html>
