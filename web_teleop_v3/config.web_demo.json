@@ -38,19 +38,23 @@
   "gesture_macros_enabled": false,
   "gesture_hold_seconds": 0.9,
   "gesture_cooldown_seconds": 2.0,
-  "safety_require_pose": false,
-  "safety_require_hand": false,
-  "safety_lost_hold_frames": 24,
-  "safety_max_step_deg": [24.0, 24.0, 28.0, 34.0, 32.0, 36.0],
+  "safety_require_pose": true,
+  "safety_require_hand": true,
+  "safety_lost_hold_frames": 6,
+  "safety_max_step_deg": [12.0, 12.0, 14.0, 16.0, 16.0, 20.0],
+  "safety_max_velocity_deg_s": [100.0, 100.0, 120.0, 140.0, 140.0, 180.0],
+  "safety_max_accel_deg_s2": [420.0, 420.0, 520.0, 700.0, 700.0, 900.0],
+  "safety_soft_limit_margin_deg": [10.0, 10.0, 10.0, 12.0, 12.0, 8.0],
+  "safety_soft_limit_pushback": [0.35, 0.35, 0.35, 0.4, 0.4, 0.45],
   "lost_mode": "hold",
-  "collision_min_sep_m": 0.16,
+  "collision_min_sep_m": 0.22,
   "depth_fusion": {
     "enabled": true,
     "weights": {
-      "mediapipe_z": 0.45,
-      "shoulder_wrist_scale": 0.35,
-      "palm_scale": 0.20
+      "mediapipe_z": 0.56,
+      "shoulder_wrist_scale": 0.44
     },
+    "apply_to_shoulder_elbow": false,
     "one_euro": {
       "min_cutoff": 1.2,
       "beta": 0.03,
@@ -108,7 +112,7 @@
       "max_deg": 180.0,
       "home_deg": 0.0,
       "mapping": "range",
-      "invert": false,
+      "invert": true,
       "gain": 1.2,
       "offset": 0.0
     },
@@ -119,7 +123,7 @@
       "max_deg": 90.0,
       "home_deg": 0.0,
       "mapping": "range",
-      "invert": false,
+      "invert": true,
       "gain": 1.2,
       "offset": 0.0
     },
