@@ -298,20 +298,6 @@
       background: linear-gradient(90deg, #7de4a2, #6dfaaa);
       transition: width 0.08s linear;
     }
-    .trim-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 8px;
-      margin-top: 9px;
-    }
-    .trim-row {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px;
-      background: #101010;
-    }
-    .trim-row input[type="range"] { accent-color: #87efb4; }
-    .trim-row input[type="range"] { width: 100%; }
     .guide { padding: 0; }
     .howto {
       margin-bottom: 10px;
@@ -445,9 +431,8 @@
         </section>
 
         <section class="drawer-block">
-          <h3>Motor Targets + Limb Calibration (Trim)</h3>
+          <h3>Motor Targets</h3>
           <div class="motor-grid" id="motorGrid"></div>
-          <div class="trim-grid" id="trimGrid"></div>
         </section>
 
         <section class="drawer-block">
@@ -521,7 +506,10 @@
     const loader = new URDFLoader();
 
     function getArmOrientation(side) {
-      // Keep both twins with identical Y/Z orientation.
+      // Previous orientation setup.
+      if (side === "left") {
+        return { x: -Math.PI / 2, y: 0.0, z: 0.0 };
+      }
       return { x: -Math.PI / 2, y: 0.0, z: Math.PI };
     }
 
@@ -554,6 +542,16 @@
     loadRobot("left", -0.42);
     loadRobot("right", 0.42);
 
+    function groundRobot(robot) {
+      if (!robot) return;
+      robot.updateMatrixWorld(true);
+      const b = new THREE.Box3().setFromObject(robot);
+      if (b.isEmpty()) return;
+      // Move robot so its lowest point sits on the floor plane (y=0).
+      robot.position.y += -b.min.y;
+      robot.updateMatrixWorld(true);
+    }
+
     function fitRobot() {
       const ready = [robots.left, robots.right].filter(Boolean);
       if (!ready.length) return;
@@ -567,8 +565,13 @@
       box.getSize(size);
       const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
       const targetSpan = 1.18;
-      ready.forEach((r) => r.scale.setScalar(targetSpan / maxDim));
-      baseFocus.set(0, box.min.y + 0.04, 0);
+      ready.forEach((r) => {
+        r.scale.setScalar(targetSpan / maxDim);
+        groundRobot(r);
+      });
+      const finalBox = new THREE.Box3();
+      ready.forEach((r) => finalBox.expandByObject(r));
+      baseFocus.set(0, finalBox.min.y + 0.04, 0);
       orbit.target.copy(baseFocus);
       orbit.update();
     }
@@ -662,7 +665,6 @@
     const stopPlayBtn = document.getElementById("stopPlayBtn");
     const trajSelect = document.getElementById("trajSelect");
     const motorGrid = document.getElementById("motorGrid");
-    const trimGrid = document.getElementById("trimGrid");
     const guideEl = document.getElementById("guide");
     const wizardBox = document.getElementById("wizardBox");
     const metricsBox = document.getElementById("metricsBox");
@@ -672,7 +674,6 @@
     let lastMotors = [0,0,0,0,0,0];
     let lastMotorsRight = [0,0,0,0,0,0];
     let lastMotorsLeft = [0,0,0,0,0,0];
-    let trims = [0,0,0,0,0,0];
     let lastWizard = null;
     let cameraPaused = false;
 
@@ -704,33 +705,6 @@
       }
     }
 
-    function buildTrimSliders() {
-      for (let i = 0; i < 6; i++) {
-        const row = document.createElement("div");
-        row.className = "trim-row";
-        row.innerHTML = `
-          <div class="name">motor_${i+1} trim (${motorNames[i]})</div>
-          <div class="value" id="tval${i}">0.0 deg</div>
-          <input id="tslider${i}" type="range" min="-45" max="45" step="0.1" value="0">
-        `;
-        trimGrid.appendChild(row);
-      }
-      for (let i = 0; i < 6; i++) {
-        const s = document.getElementById(`tslider${i}`);
-        if (!s) continue;
-        s.addEventListener("input", () => {
-          trims[i] = parseFloat(s.value);
-          document.getElementById(`tval${i}`).textContent = `${trims[i].toFixed(1)} deg`;
-          pushTrimsNow();
-        });
-        s.addEventListener("change", () => {
-          trims[i] = parseFloat(s.value);
-          document.getElementById(`tval${i}`).textContent = `${trims[i].toFixed(1)} deg`;
-          pushTrimsNow();
-        });
-      }
-    }
-
     function updateMotorCards(m) {
       for (let i = 0; i < 6; i++) {
         const valEl = document.getElementById(`mval${i}`);
@@ -755,7 +729,7 @@
           <li>Hold neutral reach and click <em>Depth Neutral</em>.</li>
           <li>Move hand close to camera and click <em>Depth Near</em>; move back and click <em>Depth Far</em>.</li>
           <li>Then click <em>Calibrate Neutral Pose</em> and move naturally.</li>
-          <li>Use trim sliders if one joint direction needs fine correction.</li>
+          <li>Finger motion controls gripper only; shoulder and elbow follow arm lines.</li>
           <li>Use <em>Reset Robots</em> to return both arms to safe home instantly.</li>
         </ol>
       `;
@@ -848,39 +822,6 @@
       } catch (e) {
         console.error(e);
       }
-    }
-
-    let trimPushInFlight = false;
-    let trimDirty = false;
-    async function pushTrimsNow() {
-      if (trimPushInFlight) {
-        trimDirty = true;
-        return;
-      }
-      trimPushInFlight = true;
-      try {
-        do {
-          trimDirty = false;
-          const payloadTrims = trims.slice();
-          const r = await fetch("/api/trims", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ trims_deg: payloadTrims }),
-          });
-          const d = await r.json();
-          if (d.ok && Array.isArray(d.trims_deg) && d.trims_deg.length === 6) {
-            trims = d.trims_deg.map(Number);
-          }
-        } while (trimDirty);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        trimPushInFlight = false;
-      }
-    }
-    function scheduleTrimPush() {
-      // kept for compatibility with older event wiring
-      pushTrimsNow();
     }
 
     armSelect.addEventListener("change", async () => {
@@ -1017,14 +958,6 @@
             return [Math.min(lo, hi), Math.max(lo, hi)];
           });
         }
-        if (Array.isArray(s.trims_deg) && s.trims_deg.length === 6) {
-          trims = s.trims_deg.map(Number);
-          for (let i = 0; i < 6; i++) {
-            const sl = document.getElementById(`tslider${i}`);
-            sl.value = trims[i];
-            document.getElementById(`tval${i}`).textContent = `${trims[i].toFixed(1)} deg`;
-          }
-        }
         if (s.wizard_step && Array.isArray(s.wizard_steps)) {
           renderWizard({
             step: s.wizard_step,
@@ -1111,7 +1044,6 @@
     animateTwinBridge();
 
     buildMotorCards();
-    buildTrimSliders();
     setCameraLive(true);
     initSettings();
     fetch("/api/guide").then(r => r.json()).then(d => renderGuide(d.guide)).catch(() => {});

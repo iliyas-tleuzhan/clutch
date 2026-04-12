@@ -75,7 +75,7 @@ runtime_state = {
     "wizard_steps": [
         "Step 1: Choose tracked arm and ensure shoulder-elbow-wrist are visible.",
         "Step 2: Hold neutral pose for 2 seconds and click Calibrate Neutral.",
-        "Step 3: Move each limb and tune motor trim sliders for alignment.",
+        "Step 3: Move each limb and verify joint direction/alignment.",
         "Step 4: Test gestures (fist/open/pinch) and safety controls.",
         "Step 5: Record a short trajectory and replay it.",
         "Step 6: Save calibration JSON.",
@@ -508,14 +508,15 @@ def _to_rad(d: float) -> float:
     return float(d) * math.pi / 180.0
 
 
-def _arm_wrist_point(motors_deg, base_xyz):
-    # Lightweight kinematic proxy for collision checks.
+def _arm_key_points(motors_deg, base_xyz):
+    # Kinematic proxy used for self-collision checks.
     m1, m2, m3 = [float(v) for v in motors_deg[:3]]
     yaw = _to_rad(m1)
     sh = _to_rad(m2)
     el = _to_rad(m3)
     l1 = 0.34
     l2 = 0.33
+    l3 = 0.16
     sx, sy, sz = base_xyz
 
     d1 = (
@@ -536,11 +537,67 @@ def _arm_wrist_point(motors_deg, base_xyz):
     wx = ex + l2 * d2[0]
     wy = ey + l2 * d2[1]
     wz = ez + l2 * d2[2]
-    return (wx, wy, wz)
+    tx = wx + l3 * d2[0]
+    ty = wy + l3 * d2[1]
+    tz = wz + l3 * d2[2]
+    return {
+        "base": (sx, sy, sz),
+        "elbow": (ex, ey, ez),
+        "wrist": (wx, wy, wz),
+        "tool": (tx, ty, tz),
+    }
 
 
 def _dist3(a, b):
     return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)
+
+
+def _segment_distance(a0, a1, b0, b1):
+    # Closest distance between 3D line segments.
+    p1 = np.array(a0, dtype=float)
+    q1 = np.array(a1, dtype=float)
+    p2 = np.array(b0, dtype=float)
+    q2 = np.array(b1, dtype=float)
+    u = q1 - p1
+    v = q2 - p2
+    w = p1 - p2
+    a = float(np.dot(u, u))
+    b = float(np.dot(u, v))
+    c = float(np.dot(v, v))
+    d = float(np.dot(u, w))
+    e = float(np.dot(v, w))
+    den = max(1e-9, a * c - b * b)
+
+    s = clamp((b * e - c * d) / den, 0.0, 1.0)
+    t = clamp((a * e - b * d) / den, 0.0, 1.0)
+
+    cp1 = p1 + s * u
+    cp2 = p2 + t * v
+    return float(np.linalg.norm(cp1 - cp2))
+
+
+def _arms_min_distance(right_motors, left_motors, right_base, left_base):
+    rp = _arm_key_points(right_motors, right_base)
+    lp = _arm_key_points(left_motors, left_base)
+    rseg = [
+        (rp["base"], rp["elbow"]),
+        (rp["elbow"], rp["wrist"]),
+        (rp["wrist"], rp["tool"]),
+    ]
+    lseg = [
+        (lp["base"], lp["elbow"]),
+        (lp["elbow"], lp["wrist"]),
+        (lp["wrist"], lp["tool"]),
+    ]
+    d_min = 1e9
+    for sa0, sa1 in rseg:
+        for sb0, sb1 in lseg:
+            d_min = min(d_min, _segment_distance(sa0, sa1, sb0, sb1))
+    return float(d_min)
+
+
+def _motor_delta_norm(a, b):
+    return float(math.sqrt(sum((float(a[i]) - float(b[i])) ** 2 for i in range(min(len(a), len(b), 6)))))
 
 
 def collision_limit_guard(
@@ -550,19 +607,44 @@ def collision_limit_guard(
     prev_left,
     min_sep_m=0.16,
 ):
-    # Two-arm soft collision: block only motions that push wrists deeper into collision.
+    # Two-arm anti-collision with segment distances and directional blocking.
     right_base = (0.24, 0.06, 0.0)
     left_base = (-0.24, 0.06, 0.0)
-    wr_new = _arm_wrist_point(right_motors, right_base)
-    wl_new = _arm_wrist_point(left_motors, left_base)
-    wr_prev = _arm_wrist_point(prev_right, right_base)
-    wl_prev = _arm_wrist_point(prev_left, left_base)
+    sep_limit = float(min_sep_m)
+    hysteresis = 0.01
 
-    d_new = _dist3(wr_new, wl_new)
-    d_prev = _dist3(wr_prev, wl_prev)
-    blocked = d_new < float(min_sep_m) and d_new < d_prev
-    if blocked:
+    d_new = _arms_min_distance(right_motors, left_motors, right_base, left_base)
+    d_prev = _arms_min_distance(prev_right, prev_left, right_base, left_base)
+
+    if d_new >= (sep_limit + hysteresis):
+        return right_motors, left_motors, False
+
+    # Evaluate candidate responses and choose the safest valid one.
+    candidates = [
+        ("keep", right_motors, left_motors, d_new),
+        ("freeze_right", prev_right, left_motors, _arms_min_distance(prev_right, left_motors, right_base, left_base)),
+        ("freeze_left", right_motors, prev_left, _arms_min_distance(right_motors, prev_left, right_base, left_base)),
+        ("freeze_both", prev_right, prev_left, _arms_min_distance(prev_right, prev_left, right_base, left_base)),
+    ]
+
+    # Prefer solutions that clear separation; tie-break by larger final separation.
+    viable = [c for c in candidates if c[3] >= sep_limit]
+    if viable:
+        best = max(viable, key=lambda x: x[3])
+        blocked = best[0] != "keep"
+        return best[1][:], best[2][:], blocked
+
+    # If none fully clear, avoid motions that continue reducing separation.
+    moving_r = _motor_delta_norm(right_motors, prev_right)
+    moving_l = _motor_delta_norm(left_motors, prev_left)
+    if d_new < d_prev:
+        if moving_r > moving_l * 1.15:
+            return prev_right[:], left_motors[:], True
+        if moving_l > moving_r * 1.15:
+            return right_motors[:], prev_left[:], True
         return prev_right[:], prev_left[:], True
+
+    # Already close but not approaching further: keep current command.
     return right_motors, left_motors, False
 
 
@@ -614,19 +696,10 @@ def depth_components(pose_landmarks, hand_landmarks, arm_side: str):
 
     sw_scale = math.hypot(float(wrist_pose.x) - float(shoulder.x), float(wrist_pose.y) - float(shoulder.y))
     mp_z = -float(wrist_pose.z)
-    palm_scale = 0.0
-    if hand_landmarks is not None:
-        try:
-            idx = hand_landmarks[5]
-            pky = hand_landmarks[17]
-            palm_scale = math.hypot(float(idx.x) - float(pky.x), float(idx.y) - float(pky.y))
-        except Exception:
-            palm_scale = 0.0
 
     return {
         "mediapipe_z": float(mp_z),
         "shoulder_wrist_scale": float(sw_scale),
-        "palm_scale": float(palm_scale),
     }
 
 
@@ -668,11 +741,10 @@ def camera_worker(camera_idx: int, config_path: str):
     depth_cfg = cfg.get("depth_fusion", {}) or {}
     depth_enabled = bool(depth_cfg.get("enabled", True))
     depth_w = depth_cfg.get("weights", {}) or {}
-    w_mp = float(depth_w.get("mediapipe_z", 0.45))
-    w_sw = float(depth_w.get("shoulder_wrist_scale", 0.35))
-    w_ps = float(depth_w.get("palm_scale", 0.20))
-    ws = max(1e-6, w_mp + w_sw + w_ps)
-    w_mp, w_sw, w_ps = w_mp / ws, w_sw / ws, w_ps / ws
+    w_mp = float(depth_w.get("mediapipe_z", 0.56))
+    w_sw = float(depth_w.get("shoulder_wrist_scale", 0.44))
+    ws = max(1e-6, w_mp + w_sw)
+    w_mp, w_sw = w_mp / ws, w_sw / ws
     oe = depth_cfg.get("one_euro", {}) or {}
     depth_filter_right = OneEuroFilter(
         min_cutoff=float(oe.get("min_cutoff", 1.2)),
@@ -686,6 +758,12 @@ def camera_worker(camera_idx: int, config_path: str):
     )
     depth_shoulder_gain = float(depth_cfg.get("shoulder_gain_deg", 8.0))
     depth_elbow_gain = float(depth_cfg.get("elbow_gain_deg", -20.0))
+    depth_apply_joint_coupling = bool(
+        depth_cfg.get(
+            "apply_to_shoulder_elbow",
+            (mapper_right.control_mode == "palm_follow" or mapper_left.control_mode == "palm_follow"),
+        )
+    )
 
     pose_vis_min = float(cfg.get("pose_visibility_threshold", 0.55))
     quality_low_light = float(cfg.get("quality_low_light_threshold", 45.0))
@@ -784,10 +862,9 @@ def camera_worker(camera_idx: int, config_path: str):
                     raw_r = (
                         w_mp * comps_r["mediapipe_z"]
                         + w_sw * comps_r["shoulder_wrist_scale"]
-                        + w_ps * comps_r["palm_scale"]
                     )
                     filt_r = depth_filter_right.filter(raw_r, now_ts)
-                    if depth_req.get("right") in ("neutral", "near", "far") and hand_ok_right:
+                    if depth_req.get("right") in ("neutral", "near", "far") and pose_ok_right:
                         with state.lock:
                             runtime_state["depth_calibration"]["right"][depth_req["right"]] = float(filt_r)
                             state.depth_capture_request["right"] = ""
@@ -795,25 +872,26 @@ def camera_worker(camera_idx: int, config_path: str):
                     norm_r, forward_r = normalize_depth_with_calibration(filt_r, depth_cal["right"])
                     features_right["depth_norm"] = float(norm_r)
                     features_right["depth_forward"] = float(forward_r)
-                    features_right["shoulder_pitch"] = float(features_right.get("shoulder_pitch", 0.0)) + (
-                        depth_shoulder_gain * forward_r
-                    )
-                    features_right["elbow_bend"] = float(features_right.get("elbow_bend", 0.0)) + (
-                        depth_elbow_gain * forward_r
-                    )
-                    fr = cfg.get("feature_ranges", {})
-                    if "shoulder_pitch" in fr:
-                        features_right["shoulder_pitch"] = clamp(
-                            features_right["shoulder_pitch"],
-                            float(fr["shoulder_pitch"]["min"]),
-                            float(fr["shoulder_pitch"]["max"]),
+                    if depth_apply_joint_coupling and pose_ok_right:
+                        features_right["shoulder_pitch"] = float(features_right.get("shoulder_pitch", 0.0)) + (
+                            depth_shoulder_gain * forward_r
                         )
-                    if "elbow_bend" in fr:
-                        features_right["elbow_bend"] = clamp(
-                            features_right["elbow_bend"],
-                            float(fr["elbow_bend"]["min"]),
-                            float(fr["elbow_bend"]["max"]),
+                        features_right["elbow_bend"] = float(features_right.get("elbow_bend", 0.0)) + (
+                            depth_elbow_gain * forward_r
                         )
+                        fr = cfg.get("feature_ranges", {})
+                        if "shoulder_pitch" in fr:
+                            features_right["shoulder_pitch"] = clamp(
+                                features_right["shoulder_pitch"],
+                                float(fr["shoulder_pitch"]["min"]),
+                                float(fr["shoulder_pitch"]["max"]),
+                            )
+                        if "elbow_bend" in fr:
+                            features_right["elbow_bend"] = clamp(
+                                features_right["elbow_bend"],
+                                float(fr["elbow_bend"]["min"]),
+                                float(fr["elbow_bend"]["max"]),
+                            )
                     depth_debug_right = {
                         "raw": float(raw_r),
                         "filtered": float(filt_r),
@@ -827,10 +905,9 @@ def camera_worker(camera_idx: int, config_path: str):
                     raw_l = (
                         w_mp * comps_l["mediapipe_z"]
                         + w_sw * comps_l["shoulder_wrist_scale"]
-                        + w_ps * comps_l["palm_scale"]
                     )
                     filt_l = depth_filter_left.filter(raw_l, now_ts)
-                    if depth_req.get("left") in ("neutral", "near", "far") and hand_ok_left:
+                    if depth_req.get("left") in ("neutral", "near", "far") and pose_ok_left:
                         with state.lock:
                             runtime_state["depth_calibration"]["left"][depth_req["left"]] = float(filt_l)
                             state.depth_capture_request["left"] = ""
@@ -838,25 +915,26 @@ def camera_worker(camera_idx: int, config_path: str):
                     norm_l, forward_l = normalize_depth_with_calibration(filt_l, depth_cal["left"])
                     features_left["depth_norm"] = float(norm_l)
                     features_left["depth_forward"] = float(forward_l)
-                    features_left["shoulder_pitch"] = float(features_left.get("shoulder_pitch", 0.0)) + (
-                        depth_shoulder_gain * forward_l
-                    )
-                    features_left["elbow_bend"] = float(features_left.get("elbow_bend", 0.0)) + (
-                        depth_elbow_gain * forward_l
-                    )
-                    fr = cfg.get("feature_ranges", {})
-                    if "shoulder_pitch" in fr:
-                        features_left["shoulder_pitch"] = clamp(
-                            features_left["shoulder_pitch"],
-                            float(fr["shoulder_pitch"]["min"]),
-                            float(fr["shoulder_pitch"]["max"]),
+                    if depth_apply_joint_coupling and pose_ok_left:
+                        features_left["shoulder_pitch"] = float(features_left.get("shoulder_pitch", 0.0)) + (
+                            depth_shoulder_gain * forward_l
                         )
-                    if "elbow_bend" in fr:
-                        features_left["elbow_bend"] = clamp(
-                            features_left["elbow_bend"],
-                            float(fr["elbow_bend"]["min"]),
-                            float(fr["elbow_bend"]["max"]),
+                        features_left["elbow_bend"] = float(features_left.get("elbow_bend", 0.0)) + (
+                            depth_elbow_gain * forward_l
                         )
+                        fr = cfg.get("feature_ranges", {})
+                        if "shoulder_pitch" in fr:
+                            features_left["shoulder_pitch"] = clamp(
+                                features_left["shoulder_pitch"],
+                                float(fr["shoulder_pitch"]["min"]),
+                                float(fr["shoulder_pitch"]["max"]),
+                            )
+                        if "elbow_bend" in fr:
+                            features_left["elbow_bend"] = clamp(
+                                features_left["elbow_bend"],
+                                float(fr["elbow_bend"]["min"]),
+                                float(fr["elbow_bend"]["max"]),
+                            )
                     depth_debug_left = {
                         "raw": float(raw_l),
                         "filtered": float(filt_l),
