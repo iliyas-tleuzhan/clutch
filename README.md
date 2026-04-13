@@ -2,10 +2,31 @@
 
 Laptop-first teleoperation demo pipeline:
 
-1. Webcam hand tracking
-2. Hand features -> 6 motor targets
-3. Real-time 3D digital twin (VPython)
-4. Optional robot bridge path from laptop
+1. Webcam hand/arm tracking
+2. Hand/arm features -> 6 motor targets
+3. Real-time 3D digital twin
+4. Optional physical robot bridge path from laptop
+
+## Run Web V3 First (Recommended)
+
+`Web V3` is the primary demo entrypoint.
+
+```powershell
+python web_teleop_v3/app.py --camera 0 --config web_teleop_v3/config.web_demo.json --arm-side right --host 127.0.0.1 --port 8010
+```
+
+Open:
+
+```text
+http://127.0.0.1:8010
+```
+
+## Demo Videos
+
+Add your videos under `media/videos/` (example names below), then commit/push them.
+
+- [Web V3 Quick Demo](media/videos/web_v3_quick_demo.mp4)
+- [Full Teleop Demo](media/videos/full_teleop_demo.mp4)
 
 ## Install
 
@@ -31,33 +52,6 @@ Edit this file for limits/home/inversion/gain/offset:
 ```text
 so101_config.example.json
 ```
-
-## Run the full demo (recommended)
-
-Open 3 terminals from the project root.
-
-Terminal A (3D viewer):
-
-```powershell
-python so101_digital_twin_vpython.py --source udp --udp-bind 127.0.0.1 --udp-port 5005 --config .\so101_config.example.json
-```
-
-Terminal B (hand -> motors stream):
-
-```powershell
-python hand_to_so101_positions.py --camera 0 --udp 127.0.0.1:5005 --config .\so101_config.example.json
-```
-
-Terminal C (robot bridge dry-run):
-
-```powershell
-python so101_robot_bridge.py --udp-bind 127.0.0.1 --udp-port 5005 --config .\so101_config.example.json
-```
-
-You now have one shared motor stream driving both:
-
-- digital twin
-- robot bridge path
 
 ## Hand output format
 
@@ -111,16 +105,26 @@ Docs:
 
 - `sim_only_v2/README.md`
 
-## Web V3 (Camera + 3D In One Page)
+## Full Legacy Demo (Lower Priority)
 
-New cleaner-control web demo (full-arm-follow style mapping):
+If you want the original 3-process flow, run this below the Web V3 workflow.
+
+Open 3 terminals from the project root.
+
+Terminal A (3D viewer):
 
 ```powershell
-python web_teleop_v3/app.py --camera 0 --config web_teleop_v3/config.web_demo.json --arm-side right --host 127.0.0.1 --port 8010
+python so101_digital_twin_vpython.py --source udp --udp-bind 127.0.0.1 --udp-port 5005 --config .\so101_config.example.json
 ```
 
-Open:
+Terminal B (hand -> motors stream):
 
-```text
-http://127.0.0.1:8010
+```powershell
+python hand_to_so101_positions.py --camera 0 --udp 127.0.0.1:5005 --config .\so101_config.example.json
+```
+
+Terminal C (robot bridge dry-run):
+
+```powershell
+python so101_robot_bridge.py --udp-bind 127.0.0.1 --udp-port 5005 --config .\so101_config.example.json
 ```
