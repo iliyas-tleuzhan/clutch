@@ -25,8 +25,17 @@ http://127.0.0.1:8010
 
 Videos in this repo:
 
-- [Web V3 Demo](media/videos/web_v3_demo.mov)
-- [4Joystick + End Effector Control Demo](media/videos/joystick_end_effector_demo.mov)
+### Web V3 Demo
+
+<video src="https://raw.githubusercontent.com/iliyas-tleuzhan/clutch/codex/web-teleop-v3/media/videos/web_v3_demo.mov" autoplay muted loop playsinline controls width="900"></video>
+
+Fallback link: [web_v3_demo.mov](media/videos/web_v3_demo.mov)
+
+### 4Joystick + End Effector Control Demo
+
+<video src="https://raw.githubusercontent.com/iliyas-tleuzhan/clutch/codex/web-teleop-v3/media/videos/joystick_end_effector_demo.mov" autoplay muted loop playsinline controls width="900"></video>
+
+Fallback link: [joystick_end_effector_demo.mov](media/videos/joystick_end_effector_demo.mov)
 
 ## Install
 
