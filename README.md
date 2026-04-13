@@ -27,15 +27,15 @@ Videos in this repo:
 
 ### Web V3 Demo
 
-<video src="https://raw.githubusercontent.com/iliyas-tleuzhan/clutch/codex/web-teleop-v3/media/videos/web_v3_demo.mov" autoplay muted loop playsinline controls width="900"></video>
+<video src="https://raw.githubusercontent.com/iliyas-tleuzhan/clutch/codex/web-teleop-v3/media/videos/web_v3_demo_v2_20260414.mp4" autoplay muted loop playsinline controls width="900"></video>
 
-Fallback link: [web_v3_demo.mov](media/videos/web_v3_demo.mov)
+Fallback link: [web_v3_demo_v2_20260414.mp4](media/videos/web_v3_demo_v2_20260414.mp4)
 
 ### 4Joystick + End Effector Control Demo
 
-<video src="https://raw.githubusercontent.com/iliyas-tleuzhan/clutch/codex/web-teleop-v3/media/videos/joystick_end_effector_demo.mov" autoplay muted loop playsinline controls width="900"></video>
+<video src="https://raw.githubusercontent.com/iliyas-tleuzhan/clutch/codex/web-teleop-v3/media/videos/joystick_end_effector_demo_v2_20260414.mp4" autoplay muted loop playsinline controls width="900"></video>
 
-Fallback link: [joystick_end_effector_demo.mov](media/videos/joystick_end_effector_demo.mov)
+Fallback link: [joystick_end_effector_demo_v2_20260414.mp4](media/videos/joystick_end_effector_demo_v2_20260414.mp4)
 
 ## Install
 
