@@ -23,10 +23,10 @@ http://127.0.0.1:8010
 
 ## Demo Videos
 
-Add your videos under `media/videos/` (example names below), then commit/push them.
+Videos in this repo:
 
-- [Web V3 Quick Demo](media/videos/web_v3_quick_demo.mp4)
-- [Full Teleop Demo](media/videos/full_teleop_demo.mp4)
+- [Web V3 Demo](media/videos/web_v3_demo.mov)
+- [4Joystick + End Effector Control Demo](media/videos/joystick_end_effector_demo.mov)
 
 ## Install
 
