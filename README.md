@@ -1,15 +1,12 @@
 # Clutch: Laptop Teleop Vertical Slice (SO101)
 
-Laptop-first teleoperation demo pipeline:
+Primary path is now **Web Teleop V3** with end-effector control.
 
-1. Webcam hand/arm tracking
-2. Hand/arm features -> 6 motor targets
-3. Real-time 3D digital twin
-4. Optional physical robot bridge path from laptop
+Runtime flow:
 
-## Run Web V3 First (Recommended)
+`camera hand tracking -> EE target (XYZ + grip + confidence) -> IK -> motors_deg -> twin/bridge`
 
-`Web V3` is the primary demo entrypoint.
+## Primary Entrypoint
 
 ```powershell
 python web_teleop_v3/app.py --camera 0 --config web_teleop_v3/config.web_demo.json --arm-side right --host 127.0.0.1 --port 8010
@@ -21,21 +18,19 @@ Open:
 http://127.0.0.1:8010
 ```
 
-## Demo Videos
+## What Web V3 Includes
 
-Videos in this repo:
+- Restored polished Clutch shell (camera/twin/control layout)
+- End-effector representation and retargeting layer
+- Damped least-squares IK with FK consistency checks
+- Reachability/clamp diagnostics and safety gating
+- Guided calibration workflow
+- Simulation test modes (`camera`, `scripted_target`, `joint_axis_diagnostic`)
+- Structured session logging (`logs/session_<run_id>.jsonl`)
 
-### Web V3 Demo
+Detailed docs:
 
-<video src="https://raw.githubusercontent.com/iliyas-tleuzhan/clutch/codex/web-teleop-v3/media/videos/web_v3_demo_v2_20260414.mp4" autoplay muted loop playsinline controls width="900"></video>
-
-Fallback link: [web_v3_demo_v2_20260414.mp4](media/videos/web_v3_demo_v2_20260414.mp4)
-
-### 4Joystick + End Effector Control Demo
-
-<video src="https://raw.githubusercontent.com/iliyas-tleuzhan/clutch/codex/web-teleop-v3/media/videos/joystick_end_effector_demo_v2_20260414.mp4" autoplay muted loop playsinline controls width="900"></video>
-
-Fallback link: [joystick_end_effector_demo_v2_20260414.mp4](media/videos/joystick_end_effector_demo_v2_20260414.mp4)
+- `web_teleop_v3/README.md`
 
 ## Install
 
@@ -46,94 +41,11 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 
-## Local scripts
+## Other Scripts (Legacy / Utilities)
 
-- `hand_to_so101_positions.py`: Webcam hand tracking and motor target generation (`motor_1..motor_6` + `motors_deg`).
-- `so101_digital_twin_vpython.py`: Stage-1 3D digital twin viewer driven by 6 motor targets.
-- `so101_robot_bridge.py`: Laptop-side UDP motor receiver with safety clamps and optional hardware driver adapter hook.
-- `hand_tracking_yolo.py`: Optional YOLO hand detector/tracker utility.
-- `so101_config.example.json`: Calibration-ready config shape.
+- `hand_to_so101_positions.py`: legacy direct hand->joint mapping path.
+- `so101_digital_twin_vpython.py`: standalone VPython twin utility.
+- `so101_robot_bridge.py`: standalone robot bridge utility.
+- `hand_tracking_yolo.py`: optional detector utility.
 
-## Config
-
-Edit this file for limits/home/inversion/gain/offset:
-
-```text
-so101_config.example.json
-```
-
-## Hand output format
-
-`hand_to_so101_positions.py` prints JSON lines:
-
-```json
-{
-  "timestamp": 1710000000.0,
-  "motors_deg": [10.2, -14.7, 32.1, 4.9, -11.3, 22.0],
-  "motor_1": 10.2,
-  "motor_2": -14.7,
-  "motor_3": 32.1,
-  "motor_4": 4.9,
-  "motor_5": -11.3,
-  "motor_6": 22.0,
-  "hand_detected": true
-}
-```
-
-## Digital twin without webcam
-
-```powershell
-python so101_digital_twin_vpython.py --source synthetic --config .\so101_config.example.json
-```
-
-## Physical SO101 path (adapter integration point)
-
-`so101_robot_bridge.py` is safe by default (`--enable-robot` not set).
-
-To enable physical control later, provide your adapter class:
-
-```powershell
-python so101_robot_bridge.py --enable-robot --driver-module your_so101_driver_module --driver-class YourSO101Driver --config .\so101_config.example.json
-```
-
-Your driver class should implement:
-
-- `__init__(config_path: str)`
-- `send_targets(motors_deg: list[float])`
-- `close()`
-
-## Simulation-only version (new folder)
-
-If you want a clean mode with no physical-arm operation path, use:
-
-```powershell
-python sim_only_v2/sim_only_hand_and_twin.py --camera 0 --config sim_only_v2/config.sim_only.json
-```
-
-Docs:
-
-- `sim_only_v2/README.md`
-
-## Full Legacy Demo (Lower Priority)
-
-If you want the original 3-process flow, run this below the Web V3 workflow.
-
-Open 3 terminals from the project root.
-
-Terminal A (3D viewer):
-
-```powershell
-python so101_digital_twin_vpython.py --source udp --udp-bind 127.0.0.1 --udp-port 5005 --config .\so101_config.example.json
-```
-
-Terminal B (hand -> motors stream):
-
-```powershell
-python hand_to_so101_positions.py --camera 0 --udp 127.0.0.1:5005 --config .\so101_config.example.json
-```
-
-Terminal C (robot bridge dry-run):
-
-```powershell
-python so101_robot_bridge.py --udp-bind 127.0.0.1 --udp-port 5005 --config .\so101_config.example.json
-```
+For current development and validation, use **Web V3** first.
