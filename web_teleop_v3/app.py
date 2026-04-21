@@ -2,11 +2,9 @@ import argparse
 import asyncio
 import base64
 import json
-import math
 import sys
 import threading
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -22,47 +20,31 @@ PROJECT_ROOT = THIS_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from web_teleop_v3.arm_follow_mapper import ArmFollowMapper, extract_arm_features
 from web_teleop_v3.camera_quality import evaluate_frame_quality
+from web_teleop_v3.ee_target_mapper import EETargetMapper
 from web_teleop_v3.gesture_macros import GestureMacroEngine
+from web_teleop_v3.hand_pose_tracker import HandPoseTracker
+from web_teleop_v3.ik_solver import DampedLeastSquaresIKSolver
 from web_teleop_v3.ros2_bridge_stub import ROS2BridgeStub
 from web_teleop_v3.runtime_metrics import RuntimeMetrics
 from web_teleop_v3.safety_supervisor import SafetySupervisor
+from web_teleop_v3.session_logger import SessionLogger
+from web_teleop_v3.simulation_modes import SimulationModes
+from web_teleop_v3.target_visualizer import build_debug_lines
 from web_teleop_v3.trajectory_manager import TrajectoryManager
 from web_teleop_v3.validation_report import generate_sim_real_report
 from web_teleop_v3.voice_commands import VoiceCommandEngine
-
-
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
 
 ROOT = THIS_DIR
 DEFAULT_CONFIG = ROOT / "config.web_demo.json"
 INDEX_HTML = ROOT / "static" / "index.html"
 MAIN_HTML = ROOT / "static" / "main.html"
-AUKI_INDEX_HTML = ROOT / "static" / "auki_bundle" / "index.html"
-AUKI_DEMO_HTML = ROOT / "static" / "auki_bundle" / "demo.html"
-DEFAULT_SO101_GROUP_FOLLOWER = Path(
-    "C:/Users/user/.cache/huggingface/lerobot/calibration/robots/so101_follower/Group_Follower.json"
-)
-
-SO101_JOINT_ORDER = [
-    "shoulder_pan",
-    "shoulder_lift",
-    "elbow_flex",
-    "wrist_roll",
-    "wrist_flex",
-    "gripper",
-]
 
 GUIDE = [
-    {"motor": "motor_1", "name": "Base (Shoulder-Elbow Horizontal)", "how": "Shoulder->elbow line moves left/right (horizontal)"},
-    {"motor": "motor_2", "name": "Shoulder (Shoulder-Elbow Vertical)", "how": "Shoulder->elbow line moves up/down (vertical)"},
-    {"motor": "motor_3", "name": "Elbow (Elbow-Wrist Vertical)", "how": "Elbow->wrist line moves up/down (vertical)"},
-    {"motor": "motor_4", "name": "Wrist Flex", "how": "Human wrist flex up/down controls robot wrist flex"},
-    {"motor": "motor_5", "name": "Wrist Roll", "how": "Human wrist roll controls robot wrist roll"},
-    {"motor": "motor_6", "name": "Gripper", "how": "Close thumb + fingers to close gripper, open hand to open gripper"},
+    {"motor": "ee_xyz", "name": "End-Effector Position", "how": "Move your palm in 3D space"},
+    {"motor": "motor_1..motor_5", "name": "Arm Joints", "how": "Auto-solved by IK from EE target"},
+    {"motor": "motor_6", "name": "Gripper", "how": "Pinch to close, release to open"},
+    {"motor": "calibrate", "name": "Neutral Calibration", "how": "Set current palm center as workspace center"},
 ]
 
 runtime_state = {
@@ -70,20 +52,54 @@ runtime_state = {
     "trims_deg": [0.0] * 6,
     "motor_ranges": [[-160.0, 160.0], [-90.0, 90.0], [-120.0, 120.0], [-180.0, 180.0], [-90.0, 90.0], [0.0, 90.0]],
     "center_offsets": {},
-    "calibration_file": str(ROOT / "calibration.runtime.json"),
-    "wizard_step": 1,
-    "wizard_steps": [
-        "Step 1: Choose tracked arm and ensure shoulder-elbow-wrist are visible.",
-        "Step 2: Hold neutral pose for 2 seconds and click Calibrate Neutral.",
-        "Step 3: Move each limb and verify joint direction/alignment.",
-        "Step 4: Test gestures (fist/open/pinch) and safety controls.",
-        "Step 5: Record a short trajectory and replay it.",
-        "Step 6: Save calibration JSON.",
-    ],
     "depth_calibration": {
         "right": {"neutral": None, "near": None, "far": None},
         "left": {"neutral": None, "near": None, "far": None},
     },
+    "depth_live": {"right": {}, "left": {}},
+    "calibration_file": str(ROOT / "calibration.runtime.json"),
+    "debug_mode": False,
+    "input_mode": "camera",
+    "wizard_step": 1,
+    "wizard_steps": [
+        "Step 1: Choose tracked arm and ensure shoulder-elbow-wrist and palm are visible.",
+        "Step 2: Hold neutral palm pose and click Calibrate Neutral for EE center.",
+        "Step 3: Move palm in XYZ and verify the twin follows end-effector target.",
+        "Step 4: Test pinch for gripper and safety controls (freeze/estop/home).",
+        "Step 5: Record a short trajectory and replay it.",
+        "Step 6: Save calibration JSON.",
+    ],
+    "enable_motion": False,
+    "hold_to_enable": True,
+    "hold_active": False,
+    "hold_last_ts": 0.0,
+    "one_axis_mode": False,
+    "active_axis": 0,
+    "calibration_workflow": {
+        "active": False,
+        "step": 0,
+        "steps": [
+            "Move robot to neutral/home pose",
+            "Capture robot neutral FK EE reference",
+            "Capture hand neutral pose",
+            "Run +X hand motion test",
+            "Run +Y hand motion test",
+            "Run +Z hand motion test",
+        ],
+        "robot_neutral_ee_xyz": None,
+        "hand_neutral_camera_xyz": None,
+        "axis_tests": {
+            "x": {"pass": None, "message": "", "delta_target": None, "delta_fk": None},
+            "y": {"pass": None, "message": "", "delta_target": None, "delta_fk": None},
+            "z": {"pass": None, "message": "", "delta_target": None, "delta_fk": None},
+        },
+        "axis_sign_correction": [1.0, 1.0, 1.0],
+        "axis_scale_correction": [1.0, 1.0, 1.0],
+        "axis_offset_correction_m": [0.0, 0.0, 0.0],
+        "status": "idle",
+    },
+    "pending_calibration_capture": "",
+    "pending_neutral_ee_reference": None,
 }
 
 
@@ -104,16 +120,10 @@ class SharedState:
             "motor_6": 0.0,
             "pose_detected": False,
             "hand_detected": False,
-            "pose_detected_right": False,
-            "pose_detected_left": False,
-            "hand_detected_right": False,
-            "hand_detected_left": False,
             "selected_arm": runtime_state["selected_arm"],
             "trims_deg": runtime_state["trims_deg"],
             "center_offsets": runtime_state["center_offsets"],
             "human_arm_world": None,
-            "human_arm_world_right": None,
-            "human_arm_world_left": None,
             "guide": GUIDE,
             "status": "initializing",
             "macro_event": "",
@@ -124,14 +134,35 @@ class SharedState:
             "safety_left": {},
             "trajectory": {},
             "wizard_step": runtime_state["wizard_step"],
+            "ee_target": {},
+            "tracking_confidence": 0.0,
+            "ik_ok": False,
+            "ik_error_m": None,
+            "joint_limit_hit": False,
+            "singularity_warning": False,
+            "ee_fk_xyz": None,
+            "ee_error_norm": None,
+            "input_mode": runtime_state["input_mode"],
+            "debug_mode": runtime_state["debug_mode"],
+            "target_reachable": False,
+            "target_clamped": False,
+            "clamp_delta_xyz": [0.0, 0.0, 0.0],
+            "workspace_violation_axes": [],
+            "ik_fail_reason": "",
+            "safety_suppressed": False,
+            "simulation_parity": {},
+            "motion_armed": False,
+            "enable_motion": runtime_state["enable_motion"],
+            "one_axis_mode": runtime_state["one_axis_mode"],
+            "active_axis": runtime_state["active_axis"],
+            "robot_command_suppressed": True,
             "collision_blocked": False,
             "depth_right": {},
             "depth_left": {},
+            "calibration_workflow": runtime_state["calibration_workflow"],
         }
         self.running = True
         self.calibrate_request = False
-        self.reset_request = False
-        self.depth_capture_request = {"right": "", "left": ""}
 
 
 state = SharedState()
@@ -143,13 +174,46 @@ runtime_settings = {
     "camera": 0,
     "config_path": str(DEFAULT_CONFIG),
     "arm_side": "right",
+    "lerobot_calibration_file": "",
     "host": "127.0.0.1",
     "port": 8010,
 }
 safety_supervisor: Optional[SafetySupervisor] = None
-right_safety_supervisor: Optional[SafetySupervisor] = None
-left_safety_supervisor: Optional[SafetySupervisor] = None
 gesture_engine: Optional[GestureMacroEngine] = None
+session_logger: Optional[SessionLogger] = None
+
+
+def _log_event(event_type: str, fields: Optional[dict] = None):
+    if session_logger is None:
+        return
+    try:
+        session_logger.log_event(event_type=event_type, fields=fields or {})
+    except Exception:
+        return
+
+
+def _xyz_or_none(values):
+    if not isinstance(values, (list, tuple)) or len(values) != 3:
+        return None
+    out = []
+    for i in range(3):
+        try:
+            out.append(float(values[i]))
+        except Exception:
+            return None
+    return out
+
+
+def _float_list(values, n=3, default=0.0):
+    out = []
+    if not isinstance(values, (list, tuple)):
+        return [float(default)] * n
+    for i in range(n):
+        try:
+            out.append(float(values[i]))
+        except Exception:
+            out.append(float(default))
+    return out
 
 
 def resolve_mediapipe_modules():
@@ -179,61 +243,7 @@ def load_config(path: str):
         cfg = json.load(f)
     if "motors" not in cfg or len(cfg["motors"]) != 6:
         raise ValueError("Config must define 6 motors.")
-    if "feature_ranges" not in cfg:
-        raise ValueError("Config must define feature_ranges.")
-    apply_group_follower_calibration(cfg)
     return cfg
-
-
-def _ticks_to_deg(raw_tick: float) -> float:
-    # STS-style 12-bit servo ticks (0..4095) mapped to approximately [-180, +180] degrees.
-    return (float(raw_tick) / 4095.0) * 360.0 - 180.0
-
-
-def apply_group_follower_calibration(cfg: dict) -> None:
-    calib_path_raw = cfg.get("robot_calibration_file")
-    if calib_path_raw:
-        calib_path = Path(str(calib_path_raw))
-    else:
-        calib_path = DEFAULT_SO101_GROUP_FOLLOWER
-    if not calib_path.exists():
-        return
-
-    try:
-        data = json.loads(calib_path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-
-    motors = cfg.get("motors")
-    if not isinstance(motors, list) or len(motors) != 6:
-        return
-
-    for i, joint_name in enumerate(SO101_JOINT_ORDER):
-        joint_cfg = data.get(joint_name)
-        if not isinstance(joint_cfg, dict):
-            continue
-
-        mn = joint_cfg.get("range_min")
-        mx = joint_cfg.get("range_max")
-        if mn is None or mx is None:
-            continue
-        try:
-            min_deg = _ticks_to_deg(float(mn))
-            max_deg = _ticks_to_deg(float(mx))
-        except Exception:
-            continue
-        if not math.isfinite(min_deg) or not math.isfinite(max_deg):
-            continue
-
-        lo, hi = (min_deg, max_deg) if min_deg <= max_deg else (max_deg, min_deg)
-        motors[i]["min_deg"] = float(round(lo, 3))
-        motors[i]["max_deg"] = float(round(hi, 3))
-
-        home = float(motors[i].get("home_deg", (lo + hi) * 0.5))
-        motors[i]["home_deg"] = float(max(lo, min(hi, home)))
-        motors[i]["calib_joint"] = joint_name
-        motors[i]["calib_servo_id"] = int(joint_cfg.get("id", i + 1))
-        motors[i]["calib_homing_offset"] = float(joint_cfg.get("homing_offset", 0.0))
 
 
 def _safe_float_list(values, n=6, default=0.0):
@@ -245,6 +255,227 @@ def _safe_float_list(values, n=6, default=0.0):
             out.append(float(values[i]))
         except Exception:
             out.append(default)
+    return out
+
+
+def _motor_ranges_from_config(cfg: dict) -> list:
+    out = []
+    for m in cfg.get("motors", []):
+        lo = float(m.get("min_deg", -180.0))
+        hi = float(m.get("max_deg", 180.0))
+        out.append([min(lo, hi), max(lo, hi)])
+    while len(out) < 6:
+        out.append([-180.0, 180.0])
+    return out[:6]
+
+
+def _home_motors_from_config(cfg: dict) -> list:
+    out = []
+    for m in cfg.get("motors", []):
+        out.append(float(m.get("home_deg", 0.0)))
+    while len(out) < 6:
+        out.append(0.0)
+    return out[:6]
+
+
+def _default_depth_calibration() -> dict:
+    return {
+        "right": {"neutral": None, "near": None, "far": None},
+        "left": {"neutral": None, "near": None, "far": None},
+    }
+
+
+def _depth_debug_from_raw(raw_z: Optional[float], calib: dict) -> dict:
+    if raw_z is None:
+        return {}
+    out = {"forward": float(raw_z), "norm": None}
+    near_v = calib.get("near")
+    far_v = calib.get("far")
+    try:
+        near_f = float(near_v)
+        far_f = float(far_v)
+    except Exception:
+        return out
+    den = near_f - far_f
+    if abs(den) < 1e-6:
+        return out
+    out["norm"] = float(_clamp((float(raw_z) - far_f) / den, 0.0, 1.0))
+    return out
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, float(v)))
+
+
+def _map_gripper_to_motor(cfg: dict, grip_closedness: float) -> float:
+    """
+    Convert grip scalar (0=open, 1=closed) into motor_6 angle.
+    """
+    motors = cfg.get("motors", [])
+    m6 = motors[5] if len(motors) >= 6 else {}
+    ee_cfg = cfg.get("ee_target_mapper", {})
+    grip_cfg = ee_cfg.get("gripper_motor", {})
+
+    lo = float(m6.get("min_deg", 0.0))
+    hi = float(m6.get("max_deg", 90.0))
+    open_deg = float(grip_cfg.get("open_deg", m6.get("home_deg", lo)))
+    closed_deg = float(grip_cfg.get("closed_deg", hi))
+
+    g = _clamp(grip_closedness, 0.0, 1.0)
+    deg = open_deg + (closed_deg - open_deg) * g
+    return _clamp(deg, min(lo, hi), max(lo, hi))
+
+
+def _apply_runtime_trims(cfg: dict, motors: list, trims: list) -> list:
+    out = []
+    limits = []
+    for m in cfg.get("motors", []):
+        limits.append((float(m.get("min_deg", -180.0)), float(m.get("max_deg", 180.0))))
+    while len(limits) < 6:
+        limits.append((-180.0, 180.0))
+
+    for i in range(6):
+        base = float(motors[i]) if i < len(motors) else 0.0
+        trim = float(trims[i]) if i < len(trims) else 0.0
+        lo, hi = limits[i]
+        out.append(_clamp(base + trim, lo, hi))
+    return out
+
+
+def _new_calibration_workflow() -> dict:
+    return {
+        "active": True,
+        "step": 1,
+        "steps": [
+            "Move robot to neutral/home pose",
+            "Capture robot neutral FK EE reference",
+            "Capture hand neutral pose",
+            "Run +X hand motion test",
+            "Run +Y hand motion test",
+            "Run +Z hand motion test",
+        ],
+        "robot_neutral_ee_xyz": None,
+        "hand_neutral_camera_xyz": None,
+        "axis_tests": {
+            "x": {"pass": None, "message": "", "delta_target": None, "delta_fk": None},
+            "y": {"pass": None, "message": "", "delta_target": None, "delta_fk": None},
+            "z": {"pass": None, "message": "", "delta_target": None, "delta_fk": None},
+        },
+        "axis_sign_correction": [1.0, 1.0, 1.0],
+        "axis_scale_correction": [1.0, 1.0, 1.0],
+        "axis_offset_correction_m": [0.0, 0.0, 0.0],
+        "status": "step_1_home_robot",
+    }
+
+
+def _evaluate_axis_test(workflow: dict, latest_payload: dict, axis_name: str, min_delta_m: float = 0.008):
+    idx_map = {"x": 0, "y": 1, "z": 2}
+    if axis_name not in idx_map:
+        return
+    idx = idx_map[axis_name]
+
+    robot_neutral = workflow.get("robot_neutral_ee_xyz")
+    ee_target = latest_payload.get("ee_target_xyz")
+    ee_fk = latest_payload.get("ee_fk_xyz")
+    if not (
+        isinstance(robot_neutral, list)
+        and len(robot_neutral) == 3
+        and isinstance(ee_target, list)
+        and len(ee_target) == 3
+        and isinstance(ee_fk, list)
+        and len(ee_fk) == 3
+    ):
+        workflow["axis_tests"][axis_name] = {
+            "pass": False,
+            "message": "missing_reference_or_live_data",
+            "delta_target": None,
+            "delta_fk": None,
+        }
+        return
+
+    delta_target = [float(ee_target[i]) - float(robot_neutral[i]) for i in range(3)]
+    delta_fk = [float(ee_fk[i]) - float(robot_neutral[i]) for i in range(3)]
+    target_axis_delta = float(delta_target[idx])
+    fk_axis_delta = float(delta_fk[idx])
+
+    moved_target = abs(target_axis_delta) >= min_delta_m
+    moved_fk = abs(fk_axis_delta) >= min_delta_m
+    target_positive = target_axis_delta > 0.0
+    fk_positive = fk_axis_delta > 0.0
+    same_sign = (target_axis_delta == 0.0 and fk_axis_delta == 0.0) or ((target_axis_delta > 0) == (fk_axis_delta > 0))
+    passed = bool(moved_target and moved_fk and target_positive and fk_positive and same_sign)
+
+    msg = "ok"
+    if not moved_target:
+        msg = "insufficient_target_axis_motion"
+    elif not moved_fk:
+        msg = "insufficient_fk_axis_motion"
+    elif not target_positive:
+        msg = "target_not_positive_axis"
+    elif not same_sign:
+        msg = "fk_direction_mismatch"
+    elif not fk_positive:
+        msg = "fk_not_positive_axis"
+
+    workflow["axis_tests"][axis_name] = {
+        "pass": passed,
+        "message": msg,
+        "delta_target": delta_target,
+        "delta_fk": delta_fk,
+    }
+
+    if moved_fk and moved_target:
+        if fk_axis_delta < 0.0:
+            workflow["axis_sign_correction"][idx] *= -1.0
+        ratio = abs(target_axis_delta) / max(1e-6, abs(fk_axis_delta))
+        ratio = _clamp(ratio, 0.25, 4.0)
+        workflow["axis_scale_correction"][idx] = float(
+            _clamp(workflow["axis_scale_correction"][idx] * ratio, 0.1, 10.0)
+        )
+
+
+def _limit_command_step(prev_cmd: list, target_cmd: list, max_step: list) -> list:
+    out = []
+    for i in range(6):
+        p = float(prev_cmd[i]) if i < len(prev_cmd) else 0.0
+        t = float(target_cmd[i]) if i < len(target_cmd) else 0.0
+        s = float(max_step[i]) if i < len(max_step) else float(max_step[-1] if max_step else 1.0)
+        out.append(_clamp(t, p - s, p + s))
+    return out
+
+
+def _sync_workflow_corrections_to_center_offsets(workflow: dict, center_offsets: dict) -> dict:
+    out = dict(center_offsets or {})
+    sign = workflow.get("axis_sign_correction", [1.0, 1.0, 1.0])
+    scale = workflow.get("axis_scale_correction", [1.0, 1.0, 1.0])
+    offs = workflow.get("axis_offset_correction_m", [0.0, 0.0, 0.0])
+    try:
+        out["axis_sign_x"] = float(sign[0])
+        out["axis_sign_y"] = float(sign[1])
+        out["axis_sign_z"] = float(sign[2])
+    except Exception:
+        pass
+    try:
+        out["axis_scale_x"] = float(scale[0])
+        out["axis_scale_y"] = float(scale[1])
+        out["axis_scale_z"] = float(scale[2])
+    except Exception:
+        pass
+    try:
+        out["axis_offset_x_m"] = float(offs[0])
+        out["axis_offset_y_m"] = float(offs[1])
+        out["axis_offset_z_m"] = float(offs[2])
+    except Exception:
+        pass
+
+    robot_neutral = workflow.get("robot_neutral_ee_xyz")
+    if isinstance(robot_neutral, list) and len(robot_neutral) == 3:
+        try:
+            out["workspace_center_x"] = float(robot_neutral[0])
+            out["workspace_center_y"] = float(robot_neutral[1])
+            out["workspace_center_z"] = float(robot_neutral[2])
+        except Exception:
+            pass
     return out
 
 
@@ -272,38 +503,92 @@ def load_saved_calibration(calib_path: str):
                 except Exception:
                     continue
             runtime_state["center_offsets"] = safe_center
-        depth_cal = data.get("depth_calibration")
-        if isinstance(depth_cal, dict):
-            for side in ("right", "left"):
-                d = depth_cal.get(side)
-                if not isinstance(d, dict):
-                    continue
-                out = {}
-                for k in ("neutral", "near", "far"):
-                    v = d.get(k)
-                    if v is None:
-                        out[k] = None
-                    else:
-                        try:
-                            out[k] = float(v)
-                        except Exception:
-                            out[k] = None
-                runtime_state["depth_calibration"][side] = out
+            wf = runtime_state.get("calibration_workflow", {})
+            if isinstance(wf, dict):
+                wf["axis_sign_correction"] = [
+                    float(safe_center.get("axis_sign_x", 1.0)),
+                    float(safe_center.get("axis_sign_y", 1.0)),
+                    float(safe_center.get("axis_sign_z", 1.0)),
+                ]
+                wf["axis_scale_correction"] = [
+                    float(safe_center.get("axis_scale_x", 1.0)),
+                    float(safe_center.get("axis_scale_y", 1.0)),
+                    float(safe_center.get("axis_scale_z", 1.0)),
+                ]
+                wf["axis_offset_correction_m"] = [
+                    float(safe_center.get("axis_offset_x_m", 0.0)),
+                    float(safe_center.get("axis_offset_y_m", 0.0)),
+                    float(safe_center.get("axis_offset_z_m", 0.0)),
+                ]
+                runtime_state["calibration_workflow"] = wf
 
 
-def save_calibration_to_file(calib_path: str):
+def _save_calibration_into_config(config_path: str, calibration_payload: dict):
+    p = Path(config_path)
+    if not p.exists():
+        raise FileNotFoundError(f"Config not found for calibration save: {config_path}")
+    with p.open("r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    ee_cfg = cfg.setdefault("ee_target_mapper", {})
+    center = calibration_payload.get("center_offsets", {})
+    if isinstance(center, dict):
+        try:
+            ee_cfg["workspace_center_m"] = [
+                float(center["workspace_center_x"]),
+                float(center["workspace_center_y"]),
+                float(center["workspace_center_z"]),
+            ]
+        except Exception:
+            pass
+        try:
+            ee_cfg["axis_sign_correction"] = [
+                float(center["axis_sign_x"]),
+                float(center["axis_sign_y"]),
+                float(center["axis_sign_z"]),
+            ]
+        except Exception:
+            pass
+        try:
+            ee_cfg["axis_scale_correction"] = [
+                float(center["axis_scale_x"]),
+                float(center["axis_scale_y"]),
+                float(center["axis_scale_z"]),
+            ]
+        except Exception:
+            pass
+        try:
+            ee_cfg["axis_offset_correction_m"] = [
+                float(center["axis_offset_x_m"]),
+                float(center["axis_offset_y_m"]),
+                float(center["axis_offset_z_m"]),
+            ]
+        except Exception:
+            pass
+    cfg["calibration_runtime"] = {
+        "saved_at": float(calibration_payload.get("saved_at", time.time())),
+        "selected_arm": calibration_payload.get("selected_arm", "right"),
+        "center_offsets": center,
+    }
+
+    with p.open("w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def save_calibration_to_file(calib_path: str, config_path: Optional[str] = None):
     with state.lock:
         payload = {
             "saved_at": time.time(),
             "selected_arm": runtime_state["selected_arm"],
             "trims_deg": runtime_state["trims_deg"],
             "center_offsets": runtime_state["center_offsets"],
-            "depth_calibration": runtime_state.get("depth_calibration", {}),
         }
     p = Path(calib_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+    if config_path:
+        _save_calibration_into_config(config_path=config_path, calibration_payload=payload)
     return payload
 
 
@@ -321,162 +606,36 @@ def pick_hand_landmarks(hands_result, requested_side: str):
     return hands_result.multi_hand_landmarks[0].landmark
 
 
-def split_hand_landmarks_by_side(hands_result, pose_landmarks=None):
-    out = {"left": None, "right": None}
-    if not hands_result.multi_hand_landmarks:
-        return out
-
-    hands = list(hands_result.multi_hand_landmarks)
-    handed = list(hands_result.multi_handedness or [])
-
-    # 1) Try MediaPipe handedness labels first.
-    if handed:
-        for h_lm, h_side in zip(hands, handed):
-            lbl = str(h_side.classification[0].label).strip().lower()
-            if lbl in out and out[lbl] is None:
-                out[lbl] = h_lm.landmark
-
-    # 2) Fallback: assign by nearest pose wrist in image space.
-    if pose_landmarks is not None and (out["left"] is None or out["right"] is None):
-        candidates = []
-        for h_lm in hands:
-            w = h_lm.landmark[0]
-            candidates.append((h_lm.landmark, float(w.x), float(w.y)))
-
-        if candidates:
-            lw = pose_landmarks[15]
-            rw = pose_landmarks[16]
-            left_w = np.array([float(lw.x), float(lw.y)], dtype=float)
-            right_w = np.array([float(rw.x), float(rw.y)], dtype=float)
-
-            # Greedy nearest assignment without duplicating one hand to both sides.
-            used = set()
-            for side_name, side_w in (("left", left_w), ("right", right_w)):
-                if out[side_name] is not None:
-                    continue
-                best_idx = None
-                best_d = 1e9
-                for i, (_, x, y) in enumerate(candidates):
-                    if i in used:
-                        continue
-                    d = float(np.linalg.norm(np.array([x, y]) - side_w))
-                    if d < best_d:
-                        best_d = d
-                        best_idx = i
-                if best_idx is not None:
-                    used.add(best_idx)
-                    out[side_name] = candidates[best_idx][0]
-
-    # 3) Last resort: fill any missing side with the first available hand.
-    if out["left"] is None and out["right"] is not None:
-        out["left"] = out["right"]
-    if out["right"] is None and out["left"] is not None:
-        out["right"] = out["left"]
-    if out["left"] is None and hands:
-        out["left"] = hands[0].landmark
-    if out["right"] is None and hands:
-        out["right"] = hands[0].landmark
-    return out
-
-
-def remap_side_for_mirrored_input(side: str, mirrored_input: bool = True) -> str:
-    s = str(side).strip().lower()
-    if s not in ("left", "right"):
-        return "right"
-    if not mirrored_input:
-        return s
-    return "left" if s == "right" else "right"
-
-
-def _lm_xy(frame, lm):
-    h, w = frame.shape[:2]
-    return int(lm.x * w), int(lm.y * h), float(getattr(lm, "visibility", 1.0))
-
-
-def draw_arm_guides(frame, pose_landmarks, hand_landmarks, arm_side: str):
+def draw_selected_arm(frame, pose_landmarks, arm_side: str):
     if pose_landmarks is None:
         return
-    side = arm_side.lower()
-    shoulder_idx, elbow_idx, wrist_idx = (11, 13, 15) if side == "left" else (12, 14, 16)
-    shoulder_l = pose_landmarks[11]
-    shoulder_r = pose_landmarks[12]
-    elbow = pose_landmarks[elbow_idx]
-    wrist_pose = pose_landmarks[wrist_idx]
-
-    sh_l = _lm_xy(frame, shoulder_l)
-    sh_r = _lm_xy(frame, shoulder_r)
-    el = _lm_xy(frame, elbow)
-    wr = _lm_xy(frame, wrist_pose)
-
-    # 1) Required arm lines: shoulder->elbow and elbow->wrist.
-    if el[2] > 0.3 and wr[2] > 0.3:
-        cv2.line(frame, (el[0], el[1]), (wr[0], wr[1]), (0, 220, 255), 4, cv2.LINE_AA)
-    src_sh = sh_l if side == "left" else sh_r
-    if src_sh[2] > 0.3 and el[2] > 0.3:
-        cv2.line(frame, (src_sh[0], src_sh[1]), (el[0], el[1]), (0, 220, 255), 4, cv2.LINE_AA)
-
-    # 2) Required POIs: 2 shoulders, 1 elbow, 2 wrists, 1 thumb.
-    poi = [
-        (sh_l[0], sh_l[1]),  # shoulder 1
-        (sh_r[0], sh_r[1]),  # shoulder 2
-        (el[0], el[1]),      # elbow
-        (wr[0], wr[1]),      # wrist from pose
-    ]
-    if hand_landmarks is not None:
-        h, w = frame.shape[:2]
-        wrist_hand = hand_landmarks[0]
-        thumb_tip = hand_landmarks[4]
-        poi.append((int(wrist_hand.x * w), int(wrist_hand.y * h)))  # wrist from hand model
-        poi.append((int(thumb_tip.x * w), int(thumb_tip.y * h)))    # thumb
-    else:
-        # Keep consistent point count even when hand temporarily drops.
-        poi.append((wr[0] + 8, wr[1] + 8))
-        poi.append((wr[0] + 16, wr[1] + 16))
-
-    for i, p in enumerate(poi):
-        color = (255, 255, 255) if i < 4 else (80, 255, 160)
-        radius = 8 if i == (0 if side == "left" else 1) else 6
-        cv2.circle(frame, p, radius, color, -1, cv2.LINE_AA)
-
-    # Mapping annotation requested by user:
-    # Shoulder->Elbow line controls M1 (horizontal) and M2 (vertical).
-    # Elbow->Wrist line controls M3 (vertical).
-    m_se = ((src_sh[0] + el[0]) // 2, (src_sh[1] + el[1]) // 2)
-    m_ew = ((el[0] + wr[0]) // 2, (el[1] + wr[1]) // 2)
-    cv2.putText(frame, "M1 horiz / M2 vert", m_se, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 230, 255), 1, cv2.LINE_AA)
-    cv2.putText(frame, "M3 vert", m_ew, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 230, 255), 1, cv2.LINE_AA)
-    cv2.putText(
-        frame,
-        "BASE",
-        (src_sh[0] + 10, src_sh[1] - 10),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (255, 255, 255),
-        1,
-        cv2.LINE_AA,
-    )
-
-
-def draw_palm_only(frame, hand_landmarks):
-    if hand_landmarks is None:
-        return
+    ids = (11, 13, 15) if arm_side.lower() == "left" else (12, 14, 16)
     h, w = frame.shape[:2]
-    pts = {}
-    ids = [0, 5, 9, 13, 17]
+    pts = []
     for idx in ids:
-        lm = hand_landmarks[idx]
-        pts[idx] = (int(lm.x * w), int(lm.y * h))
+        lm = pose_landmarks[idx]
+        pts.append((int(lm.x * w), int(lm.y * h), float(getattr(lm, "visibility", 1.0))))
 
-    palm_edges = [(0, 5), (5, 9), (9, 13), (13, 17), (17, 0), (0, 9), (5, 17)]
-    for a, b in palm_edges:
-        if a in pts and b in pts:
-            cv2.line(frame, pts[a], pts[b], (0, 235, 180), 3, cv2.LINE_AA)
-    for idx in ids:
-        if idx in pts:
-            cv2.circle(frame, pts[idx], 4, (255, 255, 255), -1, cv2.LINE_AA)
+    for i in range(2):
+        p0 = pts[i]
+        p1 = pts[i + 1]
+        if p0[2] > 0.35 and p1[2] > 0.35:
+            cv2.line(frame, (p0[0], p0[1]), (p1[0], p1[1]), (0, 210, 255), 4, cv2.LINE_AA)
+    for p in pts:
+        if p[2] > 0.35:
+            cv2.circle(frame, (p[0], p[1]), 7, (255, 255, 255), -1, cv2.LINE_AA)
 
 
-def _draw_overlay(frame, motors, pose_ok, hand_ok, selected_arm, safety_snapshot=None, quality=None):
+def _draw_overlay(
+    frame,
+    motors,
+    pose_ok,
+    hand_ok,
+    selected_arm,
+    safety_snapshot=None,
+    quality=None,
+    debug_lines=None,
+):
     safety_snapshot = safety_snapshot or {}
     quality = quality or {}
     lines = [
@@ -491,6 +650,8 @@ def _draw_overlay(frame, motors, pose_ok, hand_ok, selected_arm, safety_snapshot
     if quality.get("blurry", False):
         lines.append("warning: blurry")
     lines += [f"m{i+1}: {motors[i]:+06.1f} deg" for i in range(6)]
+    if debug_lines:
+        lines += list(debug_lines)
     for i, txt in enumerate(lines):
         cv2.putText(
             frame,
@@ -504,549 +665,423 @@ def _draw_overlay(frame, motors, pose_ok, hand_ok, selected_arm, safety_snapshot
         )
 
 
-def _to_rad(d: float) -> float:
-    return float(d) * math.pi / 180.0
-
-
-def _arm_key_points(motors_deg, base_xyz):
-    # Kinematic proxy used for self-collision checks.
-    m1, m2, m3 = [float(v) for v in motors_deg[:3]]
-    yaw = _to_rad(m1)
-    sh = _to_rad(m2)
-    el = _to_rad(m3)
-    l1 = 0.34
-    l2 = 0.33
-    l3 = 0.16
-    sx, sy, sz = base_xyz
-
-    d1 = (
-        math.cos(yaw) * math.cos(sh),
-        math.sin(sh),
-        math.sin(yaw) * math.cos(sh),
-    )
-    ex = sx + l1 * d1[0]
-    ey = sy + l1 * d1[1]
-    ez = sz + l1 * d1[2]
-
-    fore_pitch = sh - el
-    d2 = (
-        math.cos(yaw) * math.cos(fore_pitch),
-        math.sin(fore_pitch),
-        math.sin(yaw) * math.cos(fore_pitch),
-    )
-    wx = ex + l2 * d2[0]
-    wy = ey + l2 * d2[1]
-    wz = ez + l2 * d2[2]
-    tx = wx + l3 * d2[0]
-    ty = wy + l3 * d2[1]
-    tz = wz + l3 * d2[2]
+def _default_quality() -> dict:
     return {
-        "base": (sx, sy, sz),
-        "elbow": (ex, ey, ez),
-        "wrist": (wx, wy, wz),
-        "tool": (tx, ty, tz),
+        "quality_score": 100.0,
+        "low_light": False,
+        "critical_low_light": False,
+        "blurry": False,
+        "brightness": 100.0,
+        "blur_var": 100.0,
     }
 
 
-def _dist3(a, b):
-    return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)
-
-
-def _segment_distance(a0, a1, b0, b1):
-    # Closest distance between 3D line segments.
-    p1 = np.array(a0, dtype=float)
-    q1 = np.array(a1, dtype=float)
-    p2 = np.array(b0, dtype=float)
-    q2 = np.array(b1, dtype=float)
-    u = q1 - p1
-    v = q2 - p2
-    w = p1 - p2
-    a = float(np.dot(u, u))
-    b = float(np.dot(u, v))
-    c = float(np.dot(v, v))
-    d = float(np.dot(u, w))
-    e = float(np.dot(v, w))
-    den = max(1e-9, a * c - b * b)
-
-    s = clamp((b * e - c * d) / den, 0.0, 1.0)
-    t = clamp((a * e - b * d) / den, 0.0, 1.0)
-
-    cp1 = p1 + s * u
-    cp2 = p2 + t * v
-    return float(np.linalg.norm(cp1 - cp2))
-
-
-def _arms_min_distance(right_motors, left_motors, right_base, left_base):
-    rp = _arm_key_points(right_motors, right_base)
-    lp = _arm_key_points(left_motors, left_base)
-    rseg = [
-        (rp["base"], rp["elbow"]),
-        (rp["elbow"], rp["wrist"]),
-        (rp["wrist"], rp["tool"]),
-    ]
-    lseg = [
-        (lp["base"], lp["elbow"]),
-        (lp["elbow"], lp["wrist"]),
-        (lp["wrist"], lp["tool"]),
-    ]
-    d_min = 1e9
-    for sa0, sa1 in rseg:
-        for sb0, sb1 in lseg:
-            d_min = min(d_min, _segment_distance(sa0, sa1, sb0, sb1))
-    return float(d_min)
-
-
-def _motor_delta_norm(a, b):
-    return float(math.sqrt(sum((float(a[i]) - float(b[i])) ** 2 for i in range(min(len(a), len(b), 6)))))
-
-
-def collision_limit_guard(
-    right_motors,
-    left_motors,
-    prev_right,
-    prev_left,
-    min_sep_m=0.16,
-):
-    # Two-arm anti-collision with segment distances and directional blocking.
-    right_base = (0.24, 0.06, 0.0)
-    left_base = (-0.24, 0.06, 0.0)
-    sep_limit = float(min_sep_m)
-    hysteresis = 0.01
-
-    d_new = _arms_min_distance(right_motors, left_motors, right_base, left_base)
-    d_prev = _arms_min_distance(prev_right, prev_left, right_base, left_base)
-
-    if d_new >= (sep_limit + hysteresis):
-        return right_motors, left_motors, False
-
-    # Evaluate candidate responses and choose the safest valid one.
-    candidates = [
-        ("keep", right_motors, left_motors, d_new),
-        ("freeze_right", prev_right, left_motors, _arms_min_distance(prev_right, left_motors, right_base, left_base)),
-        ("freeze_left", right_motors, prev_left, _arms_min_distance(right_motors, prev_left, right_base, left_base)),
-        ("freeze_both", prev_right, prev_left, _arms_min_distance(prev_right, prev_left, right_base, left_base)),
-    ]
-
-    # Prefer solutions that clear separation; tie-break by larger final separation.
-    viable = [c for c in candidates if c[3] >= sep_limit]
-    if viable:
-        best = max(viable, key=lambda x: x[3])
-        blocked = best[0] != "keep"
-        return best[1][:], best[2][:], blocked
-
-    # If none fully clear, avoid motions that continue reducing separation.
-    moving_r = _motor_delta_norm(right_motors, prev_right)
-    moving_l = _motor_delta_norm(left_motors, prev_left)
-    if d_new < d_prev:
-        if moving_r > moving_l * 1.15:
-            return prev_right[:], left_motors[:], True
-        if moving_l > moving_r * 1.15:
-            return right_motors[:], prev_left[:], True
-        return prev_right[:], prev_left[:], True
-
-    # Already close but not approaching further: keep current command.
-    return right_motors, left_motors, False
-
-
-class OneEuroFilter:
-    def __init__(self, min_cutoff=1.2, beta=0.03, d_cutoff=1.0):
-        self.min_cutoff = float(min_cutoff)
-        self.beta = float(beta)
-        self.d_cutoff = float(d_cutoff)
-        self.x_prev = None
-        self.dx_prev = 0.0
-        self.t_prev = None
-
-    @staticmethod
-    def _alpha(cutoff, dt):
-        tau = 1.0 / (2.0 * math.pi * max(1e-6, cutoff))
-        return 1.0 / (1.0 + tau / max(1e-6, dt))
-
-    def filter(self, x: float, t: float) -> float:
-        x = float(x)
-        if self.x_prev is None:
-            self.x_prev = x
-            self.t_prev = float(t)
-            return x
-        dt = max(1e-6, float(t) - float(self.t_prev))
-        dx = (x - self.x_prev) / dt
-        a_d = self._alpha(self.d_cutoff, dt)
-        dx_hat = a_d * dx + (1.0 - a_d) * self.dx_prev
-        cutoff = self.min_cutoff + self.beta * abs(dx_hat)
-        a = self._alpha(cutoff, dt)
-        x_hat = a * x + (1.0 - a) * self.x_prev
-        self.x_prev = x_hat
-        self.dx_prev = dx_hat
-        self.t_prev = float(t)
-        return x_hat
-
-
-def depth_components(pose_landmarks, hand_landmarks, arm_side: str):
-    if pose_landmarks is None:
-        return None
-    side = arm_side.lower()
-    shoulder_idx, wrist_idx = (11, 15) if side == "left" else (12, 16)
-    try:
-        shoulder = pose_landmarks[shoulder_idx]
-        wrist_pose = pose_landmarks[wrist_idx]
-    except Exception:
-        return None
-    if getattr(shoulder, "visibility", 0.0) < 0.25 or getattr(wrist_pose, "visibility", 0.0) < 0.25:
-        return None
-
-    sw_scale = math.hypot(float(wrist_pose.x) - float(shoulder.x), float(wrist_pose.y) - float(shoulder.y))
-    mp_z = -float(wrist_pose.z)
-
-    return {
-        "mediapipe_z": float(mp_z),
-        "shoulder_wrist_scale": float(sw_scale),
-    }
-
-
-def normalize_depth_with_calibration(depth_raw: float, depth_calib: dict):
-    neutral = depth_calib.get("neutral")
-    near = depth_calib.get("near")
-    far = depth_calib.get("far")
-    if near is not None and far is not None and abs(float(near) - float(far)) > 1e-6:
-        num = float(depth_raw) - float(far)
-        den = float(near) - float(far)
-        norm = clamp(num / den, 0.0, 1.0)
-    elif neutral is not None:
-        # fallback symmetric normalization around neutral
-        norm = clamp(0.5 + (float(depth_raw) - float(neutral)) * 1.8, 0.0, 1.0)
-    else:
-        norm = 0.5
-    forward = clamp((norm - 0.5) * 2.0, -1.0, 1.0)
-    return float(norm), float(forward)
+def _build_sim_frame(width: int, height: int, mode_label: str) -> np.ndarray:
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    cv2.putText(
+        frame,
+        f"SIMULATION MODE: {mode_label}",
+        (20, 34),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 220, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return frame
 
 
 def camera_worker(camera_idx: int, config_path: str):
-    global safety_supervisor, right_safety_supervisor, left_safety_supervisor, gesture_engine
+    global safety_supervisor, gesture_engine, session_logger
     cfg = load_config(config_path)
-    mapper_right = ArmFollowMapper(cfg)
-    mapper_left = ArmFollowMapper(cfg)
-    right_safety = SafetySupervisor(cfg)
-    left_safety = SafetySupervisor(cfg)
-    right_safety_supervisor = right_safety
-    left_safety_supervisor = left_safety
-    safety_supervisor = right_safety
+    if session_logger is not None:
+        try:
+            session_logger.close()
+        except Exception:
+            pass
+    session_logger = SessionLogger.from_config(cfg, project_root=PROJECT_ROOT)
+    _log_event(
+        "session_started",
+        {
+            "config_path": str(config_path),
+            "camera_idx": int(camera_idx),
+            "log_path": str(session_logger.log_path) if session_logger and session_logger.log_path else None,
+            "logging_enabled": bool(session_logger.enabled) if session_logger else False,
+            "lerobot_calibration_file": str(runtime_settings.get("lerobot_calibration_file", "")),
+            "lerobot_calibration_exists": bool(
+                runtime_settings.get("lerobot_calibration_file")
+                and Path(str(runtime_settings.get("lerobot_calibration_file"))).exists()
+            ),
+        },
+    )
+    tracker = HandPoseTracker(cfg)
+    ee_mapper = EETargetMapper(cfg)
+    ik_solver = DampedLeastSquaresIKSolver(cfg)
+    sim_modes = SimulationModes(cfg)
+    safety_supervisor = SafetySupervisor(cfg)
     gesture_engine = GestureMacroEngine(cfg)
     metrics = RuntimeMetrics(window=int(cfg.get("metrics_window", 120)))
-    draw_camera_overlay = bool(cfg.get("draw_camera_overlay", False))
-    draw_pose_overlay = bool(cfg.get("draw_pose_overlay", draw_camera_overlay))
-    draw_hand_landmarks = bool(cfg.get("draw_hand_landmarks", True))
-    draw_text_overlay = bool(cfg.get("draw_text_overlay", draw_camera_overlay))
-    mirror_side_labels = bool(cfg.get("mirror_side_labels", False))
-    min_collision_sep_m = float(cfg.get("collision_min_sep_m", 0.16))
-    depth_cfg = cfg.get("depth_fusion", {}) or {}
-    depth_enabled = bool(depth_cfg.get("enabled", True))
-    depth_w = depth_cfg.get("weights", {}) or {}
-    w_mp = float(depth_w.get("mediapipe_z", 0.56))
-    w_sw = float(depth_w.get("shoulder_wrist_scale", 0.44))
-    ws = max(1e-6, w_mp + w_sw)
-    w_mp, w_sw = w_mp / ws, w_sw / ws
-    oe = depth_cfg.get("one_euro", {}) or {}
-    depth_filter_right = OneEuroFilter(
-        min_cutoff=float(oe.get("min_cutoff", 1.2)),
-        beta=float(oe.get("beta", 0.03)),
-        d_cutoff=float(oe.get("d_cutoff", 1.0)),
-    )
-    depth_filter_left = OneEuroFilter(
-        min_cutoff=float(oe.get("min_cutoff", 1.2)),
-        beta=float(oe.get("beta", 0.03)),
-        d_cutoff=float(oe.get("d_cutoff", 1.0)),
-    )
-    depth_shoulder_gain = float(depth_cfg.get("shoulder_gain_deg", 8.0))
-    depth_elbow_gain = float(depth_cfg.get("elbow_gain_deg", -20.0))
-    depth_apply_joint_coupling = bool(
-        depth_cfg.get(
-            "apply_to_shoulder_elbow",
-            (mapper_right.control_mode == "palm_follow" or mapper_left.control_mode == "palm_follow"),
-        )
-    )
 
-    pose_vis_min = float(cfg.get("pose_visibility_threshold", 0.55))
+    debug_default = bool(cfg.get("debug_mode", False))
+    input_mode = sim_modes.mode if sim_modes.enabled else "camera"
+    _log_event(
+        "simulation_mode",
+        {
+            "input_mode": input_mode,
+            "simulation_enabled": bool(sim_modes.enabled),
+        },
+    )
+    sim_cfg = cfg.get("simulation", {})
+    sim_frame_w = int(sim_cfg.get("frame_width", 1280))
+    sim_frame_h = int(sim_cfg.get("frame_height", 720))
+    hw_cfg = cfg.get("hardware_validation", {})
+    hw_enabled = bool(hw_cfg.get("enabled", True))
+    hw_hold_to_enable = bool(hw_cfg.get("hold_to_enable", True))
+    hw_hold_timeout_s = max(0.1, float(hw_cfg.get("hold_timeout_sec", 0.45)))
+    hw_one_axis_mode_default = bool(hw_cfg.get("one_axis_mode", False))
+    hw_active_axis_default = int(hw_cfg.get("active_axis", 0))
+    hw_enable_default = bool(hw_cfg.get("enable_motion_default", False))
+    hw_step = hw_cfg.get("max_step_deg_per_frame", [1.0] * 6)
+    if not isinstance(hw_step, list) or len(hw_step) != 6:
+        hw_step = [1.0] * 6
+    hw_step = [max(0.05, float(v)) for v in hw_step]
     quality_low_light = float(cfg.get("quality_low_light_threshold", 45.0))
     quality_blur = float(cfg.get("quality_blur_threshold", 35.0))
+    home_motors = _home_motors_from_config(cfg)
+    axis_validation_report = ik_solver.axis_validation_report(
+        step_deg=float(sim_cfg.get("joint_diag_step_deg", 5.0))
+    )
     with state.lock:
-        for k, v in runtime_state["center_offsets"].items():
-            if k in mapper_right.center_offsets:
-                mapper_right.center_offsets[k] = float(v)
-            if k in mapper_left.center_offsets:
-                mapper_left.center_offsets[k] = float(v)
-    mp_pose, mp_hands, mp_draw, mp_style = resolve_mediapipe_modules()
+        ee_mapper.set_calibration_offsets(runtime_state["center_offsets"])
+        runtime_state["motor_ranges"] = _motor_ranges_from_config(cfg)
+        runtime_state["debug_mode"] = bool(runtime_state.get("debug_mode", debug_default))
+        runtime_state["input_mode"] = input_mode
+        runtime_state["enable_motion"] = bool(runtime_state.get("enable_motion", hw_enable_default))
+        runtime_state["hold_to_enable"] = bool(runtime_state.get("hold_to_enable", hw_hold_to_enable))
+        runtime_state["one_axis_mode"] = bool(runtime_state.get("one_axis_mode", hw_one_axis_mode_default))
+        runtime_state["active_axis"] = int(runtime_state.get("active_axis", hw_active_axis_default))
+        if not isinstance(runtime_state.get("depth_calibration"), dict):
+            runtime_state["depth_calibration"] = _default_depth_calibration()
+        if not isinstance(runtime_state.get("depth_live"), dict):
+            runtime_state["depth_live"] = {"right": {}, "left": {}}
+        if not isinstance(runtime_state.get("calibration_workflow"), dict):
+            runtime_state["calibration_workflow"] = _new_calibration_workflow()
 
-    cap = cv2.VideoCapture(camera_idx, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(camera_idx)
+    use_camera = input_mode == "camera"
+    last_robot_cmd = home_motors[:]
+    last_visual_right = home_motors[:]
+    last_visual_left = home_motors[:]
+    last_motion_armed_state = None
+    cap = None
+    pose = None
+    hands = None
+    mp_pose = mp_hands = mp_draw = mp_style = None
 
-    if not cap.isOpened():
-        with state.lock:
-            state.latest["status"] = f"camera_open_failed(index={camera_idx})"
-        return
+    if use_camera:
+        mp_pose, mp_hands, mp_draw, mp_style = resolve_mediapipe_modules()
+        cap = cv2.VideoCapture(camera_idx, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(camera_idx)
+        if not cap.isOpened():
+            with state.lock:
+                state.latest["status"] = f"camera_open_failed(index={camera_idx})"
+            return
+        pose = mp_pose.Pose(
+            model_complexity=1,
+            min_detection_confidence=0.6,
+            min_tracking_confidence=0.6,
+        )
+        hands = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            model_complexity=1,
+            min_detection_confidence=0.6,
+            min_tracking_confidence=0.6,
+        )
 
-    with mp_pose.Pose(
-        model_complexity=1,
-        min_detection_confidence=0.6,
-        min_tracking_confidence=0.6,
-    ) as pose, mp_hands.Hands(
-        static_image_mode=False,
-        max_num_hands=2,
-        model_complexity=1,
-        min_detection_confidence=0.6,
-        min_tracking_confidence=0.6,
-    ) as hands:
+    try:
         prev_loop = time.time()
-        prev_right = mapper_right.home[:]
-        prev_left = mapper_left.home[:]
         while state.running:
             t_loop_start = time.time()
-            ok, frame = cap.read()
-            if not ok:
-                time.sleep(0.01)
-                continue
-
-            frame = cv2.flip(frame, 1)
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            pose_res = pose.process(rgb)
-            hands_res = hands.process(rgb)
-            quality = evaluate_frame_quality(
-                frame,
-                low_light_thresh=quality_low_light,
-                blur_thresh=quality_blur,
-            )
+            now = time.time()
 
             with state.lock:
                 selected_arm = runtime_state["selected_arm"]
                 trims = runtime_state["trims_deg"][:]
                 wizard_step = runtime_state["wizard_step"]
-                reset_request = state.reset_request
-                depth_req = dict(state.depth_capture_request)
-                depth_cal = {
-                    "right": dict(runtime_state.get("depth_calibration", {}).get("right", {})),
-                    "left": dict(runtime_state.get("depth_calibration", {}).get("left", {})),
+                debug_mode = bool(runtime_state["debug_mode"])
+                enable_motion = bool(runtime_state.get("enable_motion", False))
+                hold_to_enable = bool(runtime_state.get("hold_to_enable", hw_hold_to_enable))
+                hold_active = bool(runtime_state.get("hold_active", False))
+                hold_last_ts = float(runtime_state.get("hold_last_ts", 0.0))
+                one_axis_mode = bool(runtime_state.get("one_axis_mode", hw_one_axis_mode_default))
+                active_axis = int(runtime_state.get("active_axis", hw_active_axis_default))
+                pending_capture = str(runtime_state.get("pending_calibration_capture", "")).strip()
+                pending_neutral_ee = runtime_state.get("pending_neutral_ee_reference")
+                workflow_snapshot = dict(runtime_state.get("calibration_workflow", {}))
+                depth_calib_snapshot = dict(runtime_state.get("depth_calibration", _default_depth_calibration()))
+                depth_live_snapshot = dict(runtime_state.get("depth_live", {"right": {}, "left": {}}))
+
+            if use_camera:
+                ok, frame = cap.read()
+                if not ok:
+                    time.sleep(0.01)
+                    continue
+                frame = cv2.flip(frame, 1)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pose_res = pose.process(rgb)
+                hands_res = hands.process(rgb)
+                quality = evaluate_frame_quality(
+                    frame,
+                    low_light_thresh=quality_low_light,
+                    blur_thresh=quality_blur,
+                )
+
+                pose_landmarks = (
+                    pose_res.pose_landmarks.landmark if pose_res.pose_landmarks else None
+                )
+                hand_landmarks = pick_hand_landmarks(hands_res, requested_side=selected_arm)
+                observation = tracker.process(
+                    pose_landmarks=pose_landmarks,
+                    hand_landmarks=hand_landmarks,
+                    arm_side=selected_arm,
+                )
+                pose_ok = bool(observation.get("pose_detected", False))
+                hand_ok = bool(observation.get("hand_detected", False))
+                human_arm_world = observation.get("human_arm_world")
+                macro_event = ""
+                if gesture_engine is not None:
+                    macro = gesture_engine.process(hand_landmarks)
+                    if macro:
+                        safety_supervisor.trigger_macro(macro)
+                        macro_event = macro
+                ee_target = ee_mapper.map(observation=observation, arm_side=selected_arm)
+            else:
+                frame = _build_sim_frame(sim_frame_w, sim_frame_h, input_mode)
+                quality = _default_quality()
+                pose_landmarks = None
+                hand_landmarks = None
+                macro_event = ""
+                scripted_xyz = sim_modes.scripted_target(now_ts=now)
+                scripted_grip = 0.45 + 0.35 * np.sin(2.0 * np.pi * 0.09 * (now - sim_modes.start_ts))
+                projection = ee_mapper.project_robot_target([float(scripted_xyz[0]), float(scripted_xyz[1]), float(scripted_xyz[2])])
+                observation = {
+                    "timestamp": now,
+                    "pose_detected": True,
+                    "hand_detected": True,
+                    "tracking_confidence": 1.0,
+                    "raw_control_point_camera_xyz": None,
+                    "control_point_camera_xyz": None,
+                    "human_arm_world": None,
+                    "pinch_ratio": None,
                 }
+                ee_target = {
+                    "position_xyz": projection["clamped_target_xyz"],
+                    "orientation_rpy": [0.0, 0.0, 0.0],
+                    "grip": float(_clamp(scripted_grip, 0.0, 1.0)),
+                    "valid": True,
+                    "confidence_gated": False,
+                    "workspace_clamped": bool(projection["target_clamped"]),
+                    "tracking_confidence": 1.0,
+                    "raw_control_camera_xyz": None,
+                    "mapped_control_camera_xyz": None,
+                    "neutral_control_camera_xyz": None,
+                    "raw_target_xyz": projection["raw_target_xyz"],
+                    "clamped_target_xyz": projection["clamped_target_xyz"],
+                    "target_reachable": bool(projection["target_reachable"]),
+                    "target_clamped": bool(projection["target_clamped"]),
+                    "clamp_delta_xyz": projection["clamp_delta_xyz"],
+                    "workspace_violation_axes": projection["workspace_violation_axes"],
+                }
+                pose_ok = True
+                hand_ok = True
+                human_arm_world = None
 
-            model_right_side = remap_side_for_mirrored_input("right", mirrored_input=mirror_side_labels)
-            model_left_side = remap_side_for_mirrored_input("left", mirrored_input=mirror_side_labels)
-
-            pose_landmarks = (
-                pose_res.pose_landmarks.landmark if pose_res.pose_landmarks else None
+            raw_ctrl_xyz = (
+                _xyz_or_none(observation.get("control_point_camera_xyz"))
+                or _xyz_or_none(observation.get("raw_control_point_camera_xyz"))
+                or _xyz_or_none(ee_target.get("raw_control_camera_xyz"))
             )
-            hands_by_side = split_hand_landmarks_by_side(hands_res, pose_landmarks=pose_landmarks)
-            hand_right = hands_by_side.get(model_right_side)
-            hand_left = hands_by_side.get(model_left_side)
+            raw_depth_z = float(raw_ctrl_xyz[2]) if raw_ctrl_xyz is not None else None
+            selected_depth_cal = depth_calib_snapshot.get(selected_arm, {}) if isinstance(depth_calib_snapshot, dict) else {}
+            depth_debug_selected = _depth_debug_from_raw(raw_depth_z, selected_depth_cal)
+            if selected_arm == "right":
+                depth_debug_right = depth_debug_selected
+                depth_debug_left = depth_live_snapshot.get("left", {}) if isinstance(depth_live_snapshot, dict) else {}
+            else:
+                depth_debug_left = depth_debug_selected
+                depth_debug_right = depth_live_snapshot.get("right", {}) if isinstance(depth_live_snapshot, dict) else {}
 
-            features_right, pose_ok_right, hand_ok_right, human_arm_world_right = extract_arm_features(
-                pose_landmarks=pose_landmarks,
-                hand_landmarks=hand_right,
-                arm_side=model_right_side,
-                pose_vis_min=pose_vis_min,
-            )
-            features_left, pose_ok_left, hand_ok_left, human_arm_world_left = extract_arm_features(
-                pose_landmarks=pose_landmarks,
-                hand_landmarks=hand_left,
-                arm_side=model_left_side,
-                pose_vis_min=pose_vis_min,
-            )
+            if isinstance(workflow_snapshot.get("axis_sign_correction"), list):
+                ee_mapper.set_axis_corrections(
+                    sign_xyz=workflow_snapshot.get("axis_sign_correction"),
+                    scale_xyz=workflow_snapshot.get("axis_scale_correction"),
+                    offset_xyz_m=workflow_snapshot.get("axis_offset_correction_m"),
+                )
 
-            depth_debug_right = {}
-            depth_debug_left = {}
-            now_ts = time.time()
-            if depth_enabled:
-                comps_r = depth_components(pose_landmarks, hand_right, model_right_side)
-                comps_l = depth_components(pose_landmarks, hand_left, model_left_side)
-
-                if comps_r is not None:
-                    raw_r = (
-                        w_mp * comps_r["mediapipe_z"]
-                        + w_sw * comps_r["shoulder_wrist_scale"]
-                    )
-                    filt_r = depth_filter_right.filter(raw_r, now_ts)
-                    if depth_req.get("right") in ("neutral", "near", "far") and pose_ok_right:
-                        with state.lock:
-                            runtime_state["depth_calibration"]["right"][depth_req["right"]] = float(filt_r)
-                            state.depth_capture_request["right"] = ""
-                            depth_cal["right"] = dict(runtime_state["depth_calibration"]["right"])
-                    norm_r, forward_r = normalize_depth_with_calibration(filt_r, depth_cal["right"])
-                    features_right["depth_norm"] = float(norm_r)
-                    features_right["depth_forward"] = float(forward_r)
-                    if depth_apply_joint_coupling and pose_ok_right:
-                        features_right["shoulder_pitch"] = float(features_right.get("shoulder_pitch", 0.0)) + (
-                            depth_shoulder_gain * forward_r
+            if use_camera:
+                persist_calibration = False
+                calib_file_snapshot = None
+                with state.lock:
+                    if state.calibrate_request and observation.get("control_point_camera_xyz") is not None and pose_ok:
+                        neutral_fk = ik_solver.current_fk_xyz()
+                        ee_mapper.calibrate(
+                            observation,
+                            neutral_ee_reference_xyz=neutral_fk,
                         )
-                        features_right["elbow_bend"] = float(features_right.get("elbow_bend", 0.0)) + (
-                            depth_elbow_gain * forward_r
-                        )
-                        fr = cfg.get("feature_ranges", {})
-                        if "shoulder_pitch" in fr:
-                            features_right["shoulder_pitch"] = clamp(
-                                features_right["shoulder_pitch"],
-                                float(fr["shoulder_pitch"]["min"]),
-                                float(fr["shoulder_pitch"]["max"]),
-                            )
-                        if "elbow_bend" in fr:
-                            features_right["elbow_bend"] = clamp(
-                                features_right["elbow_bend"],
-                                float(fr["elbow_bend"]["min"]),
-                                float(fr["elbow_bend"]["max"]),
-                            )
-                    depth_debug_right = {
-                        "raw": float(raw_r),
-                        "filtered": float(filt_r),
-                        "norm": float(norm_r),
-                        "forward": float(forward_r),
-                        "components": comps_r,
-                        "calibration": depth_cal["right"],
-                    }
-
-                if comps_l is not None:
-                    raw_l = (
-                        w_mp * comps_l["mediapipe_z"]
-                        + w_sw * comps_l["shoulder_wrist_scale"]
-                    )
-                    filt_l = depth_filter_left.filter(raw_l, now_ts)
-                    if depth_req.get("left") in ("neutral", "near", "far") and pose_ok_left:
-                        with state.lock:
-                            runtime_state["depth_calibration"]["left"][depth_req["left"]] = float(filt_l)
-                            state.depth_capture_request["left"] = ""
-                            depth_cal["left"] = dict(runtime_state["depth_calibration"]["left"])
-                    norm_l, forward_l = normalize_depth_with_calibration(filt_l, depth_cal["left"])
-                    features_left["depth_norm"] = float(norm_l)
-                    features_left["depth_forward"] = float(forward_l)
-                    if depth_apply_joint_coupling and pose_ok_left:
-                        features_left["shoulder_pitch"] = float(features_left.get("shoulder_pitch", 0.0)) + (
-                            depth_shoulder_gain * forward_l
-                        )
-                        features_left["elbow_bend"] = float(features_left.get("elbow_bend", 0.0)) + (
-                            depth_elbow_gain * forward_l
-                        )
-                        fr = cfg.get("feature_ranges", {})
-                        if "shoulder_pitch" in fr:
-                            features_left["shoulder_pitch"] = clamp(
-                                features_left["shoulder_pitch"],
-                                float(fr["shoulder_pitch"]["min"]),
-                                float(fr["shoulder_pitch"]["max"]),
-                            )
-                        if "elbow_bend" in fr:
-                            features_left["elbow_bend"] = clamp(
-                                features_left["elbow_bend"],
-                                float(fr["elbow_bend"]["min"]),
-                                float(fr["elbow_bend"]["max"]),
-                            )
-                    depth_debug_left = {
-                        "raw": float(raw_l),
-                        "filtered": float(filt_l),
-                        "norm": float(norm_l),
-                        "forward": float(forward_l),
-                        "components": comps_l,
-                        "calibration": depth_cal["left"],
-                    }
-
-            macro_event = ""
-            if gesture_engine is not None:
-                selected_hand_landmarks = hand_right if selected_arm == "right" else hand_left
-                macro = gesture_engine.process(selected_hand_landmarks)
-                if macro:
-                    right_safety.trigger_macro(macro)
-                    left_safety.trigger_macro(macro)
-                    macro_event = macro
-
-            with state.lock:
-                if state.calibrate_request:
-                    if selected_arm == "right" and pose_ok_right:
-                        mapper_right.calibrate(features_right)
-                        runtime_state["center_offsets"] = dict(mapper_right.center_offsets)
+                        runtime_state["center_offsets"] = ee_mapper.export_calibration_offsets()
                         state.calibrate_request = False
-                    elif selected_arm == "left" and pose_ok_left:
-                        mapper_left.calibrate(features_left)
-                        runtime_state["center_offsets"] = dict(mapper_left.center_offsets)
-                        state.calibrate_request = False
-                if reset_request:
-                    state.reset_request = False
+                        persist_calibration = True
+                        calib_file_snapshot = runtime_state["calibration_file"]
+                        _log_event(
+                            "neutral_capture",
+                            {
+                                "source": "api_calibrate",
+                                "hand_neutral_camera_xyz": observation.get("control_point_camera_xyz"),
+                                "robot_neutral_fk_xyz": neutral_fk,
+                                "center_offsets": dict(runtime_state["center_offsets"]),
+                            },
+                        )
+                    if pending_capture == "hand_neutral" and observation.get("control_point_camera_xyz") is not None and pose_ok:
+                        ee_mapper.calibrate(
+                            observation,
+                            neutral_ee_reference_xyz=pending_neutral_ee if isinstance(pending_neutral_ee, list) and len(pending_neutral_ee) == 3 else None,
+                        )
+                        runtime_state["center_offsets"] = ee_mapper.export_calibration_offsets()
+                        flow = runtime_state.get("calibration_workflow", {})
+                        flow["hand_neutral_camera_xyz"] = observation.get("control_point_camera_xyz")
+                        flow["status"] = "step_3_hand_neutral_captured"
+                        flow["step"] = max(int(flow.get("step", 1)), 3)
+                        runtime_state["calibration_workflow"] = flow
+                        runtime_state["pending_calibration_capture"] = ""
+                        runtime_state["pending_neutral_ee_reference"] = None
+                        persist_calibration = True
+                        calib_file_snapshot = runtime_state["calibration_file"]
+                        _log_event(
+                            "neutral_capture",
+                            {
+                                "source": "workflow_hand_neutral",
+                                "hand_neutral_camera_xyz": observation.get("control_point_camera_xyz"),
+                                "robot_neutral_fk_xyz": pending_neutral_ee,
+                                "workflow_step": flow.get("step"),
+                                "workflow_status": flow.get("status"),
+                            },
+                        )
+                if persist_calibration and calib_file_snapshot:
+                    try:
+                        save_calibration_to_file(calib_file_snapshot, config_path=config_path)
+                    except Exception:
+                        pass
+            else:
+                with state.lock:
+                    state.calibrate_request = False
 
-            if reset_request:
-                mapper_right.prev = mapper_right.home[:]
-                mapper_left.prev = mapper_left.home[:]
-                right_safety.last_safe = mapper_right.home[:]
-                left_safety.last_safe = mapper_left.home[:]
-                right_safety.lost_count = 0
-                left_safety.lost_count = 0
+            ik_result = ik_solver.solve(
+                target_position_xyz=ee_target["position_xyz"],
+                tracking_confidence=float(ee_target.get("tracking_confidence", 0.0)),
+            )
+            if (not bool(ee_target.get("target_reachable", True))) and (not bool(ik_result.get("ik_ok", False))):
+                if bool(ee_target.get("target_clamped", False)):
+                    ik_result["ik_fail_reason"] = "target_clamped"
+            ik_output_motors = ik_result["motors_deg"][:]
+            if use_camera:
+                ik_output_motors[5] = _map_gripper_to_motor(cfg, ee_target.get("grip", 0.0))
 
-            mapped_right = mapper_right.map(
-                features=features_right,
-                pose_ok=pose_ok_right,
-                runtime_trims=trims,
-            )
-            mapped_left = mapper_left.map(
-                features=features_left,
-                pose_ok=pose_ok_left,
-                runtime_trims=trims,
-            )
+            if input_mode == "joint_axis_diagnostic":
+                joint_diag = sim_modes.apply_joint_diagnostic(
+                    base_motors=ik_output_motors,
+                    pos_joint_count=ik_solver.n_pos_joints,
+                    now_ts=now,
+                )
+                ik_output_motors = joint_diag["motors_deg"][:]
+                fk_diag = ik_solver.forward_kinematics(ik_output_motors)
+                err = float(np.linalg.norm(np.array(ee_target["position_xyz"], dtype=float) - np.array(fk_diag, dtype=float)))
+                ik_result["ee_fk_xyz"] = fk_diag
+                ik_result["ik_error_m"] = err
+                ik_result["ik_ok"] = bool(err <= ik_solver.max_error_m)
+                ik_result["ik_fail_reason"] = "" if ik_result["ik_ok"] else "max_error_exceeded"
+                ik_result["joint_diagnostic"] = joint_diag
+
+            mapped_motors = _apply_runtime_trims(cfg, ik_output_motors, trims)
 
             playback = trajectory_manager.sample_playback()
             if playback is not None:
-                if selected_arm == "right":
-                    mapped_right = playback
-                else:
-                    mapped_left = playback
+                mapped_motors = playback
 
-            safe_right = right_safety.process(
-                target_motors=mapped_right,
-                pose_ok=pose_ok_right,
-                hand_ok=hand_ok_right,
+            safe_motors = safety_supervisor.process(
+                target_motors=mapped_motors,
+                pose_ok=pose_ok,
+                hand_ok=hand_ok,
                 quality=quality,
             )
-            safe_left = left_safety.process(
-                target_motors=mapped_left,
-                pose_ok=pose_ok_left,
-                hand_ok=hand_ok_left,
-                quality=quality,
-            )
-            safe_right, safe_left, collision_blocked = collision_limit_guard(
-                safe_right,
-                safe_left,
-                prev_right=prev_right,
-                prev_left=prev_left,
-                min_sep_m=min_collision_sep_m,
-            )
-            prev_right = safe_right[:]
-            prev_left = safe_left[:]
-
-            selected_safe = safe_right if selected_arm == "right" else safe_left
-            selected_pose_ok = pose_ok_right if selected_arm == "right" else pose_ok_left
-            selected_hand_ok = hand_ok_right if selected_arm == "right" else hand_ok_left
 
             if trajectory_manager.recording:
-                trajectory_manager.append(selected_safe)
+                trajectory_manager.append(safe_motors)
 
-            if ros2_bridge.connected:
-                ros2_bridge.publish_joint_targets(selected_safe)
+            safety_snapshot = safety_supervisor.snapshot()
+            safety_suppressed = bool(
+                safety_snapshot.get("freeze", False)
+                or safety_snapshot.get("estop", False)
+                or (safety_supervisor.pose_required and not pose_ok)
+                or (safety_supervisor.hand_required and not hand_ok)
+            )
+            hold_fresh = bool(hold_active and ((now - hold_last_ts) <= hw_hold_timeout_s))
+            motion_armed = bool(enable_motion and (not hold_to_enable or hold_fresh))
+            if not hw_enabled:
+                motion_armed = bool(enable_motion)
 
-            if draw_pose_overlay:
-                draw_arm_guides(frame, pose_landmarks, hand_right, model_right_side)
-                draw_arm_guides(frame, pose_landmarks, hand_left, model_left_side)
-            if draw_hand_landmarks and hands_res.multi_hand_landmarks:
-                for h_lm in hands_res.multi_hand_landmarks:
+            robot_cmd = safe_motors[:]
+            if hw_enabled:
+                robot_cmd = _limit_command_step(last_robot_cmd, robot_cmd, hw_step)
+                if one_axis_mode:
+                    ax = int(_clamp(active_axis, 0, 5))
+                    for i in range(6):
+                        if i != ax:
+                            robot_cmd[i] = last_robot_cmd[i]
+
+            if ros2_bridge.connected and motion_armed:
+                ros2_bridge.publish_joint_targets(robot_cmd)
+                last_robot_cmd = robot_cmd[:]
+            robot_command_suppressed = bool(ros2_bridge.connected and not motion_armed)
+            if last_motion_armed_state is None or bool(last_motion_armed_state) != bool(motion_armed):
+                _log_event(
+                    "motion_arming_changed",
+                    {
+                        "motion_armed": bool(motion_armed),
+                        "enable_motion": bool(enable_motion),
+                        "hold_to_enable": bool(hold_to_enable),
+                        "hold_to_enable_active": bool(hold_fresh),
+                        "safety_suppressed": bool(safety_suppressed),
+                    },
+                )
+                last_motion_armed_state = bool(motion_armed)
+
+            if use_camera:
+                draw_selected_arm(frame, pose_landmarks, selected_arm)
+                if hand_landmarks is not None:
+                    class _HL:
+                        def __init__(self, landmark):
+                            self.landmark = landmark
+
                     mp_draw.draw_landmarks(
                         frame,
-                        h_lm,
+                        _HL(hand_landmarks),
                         mp_hands.HAND_CONNECTIONS,
                         mp_style.get_default_hand_landmarks_style(),
                         mp_style.get_default_hand_connections_style(),
                     )
-            if draw_text_overlay:
+
+            if debug_mode:
+                debug_lines = build_debug_lines(observation, ee_target, ik_result)
                 _draw_overlay(
                     frame,
-                    selected_safe,
-                    selected_pose_ok,
-                    selected_hand_ok,
+                    safe_motors,
+                    pose_ok,
+                    hand_ok,
                     selected_arm,
-                    safety_snapshot=(
-                        right_safety.snapshot() if selected_arm == "right" else left_safety.snapshot()
-                    ),
+                    safety_snapshot=safety_supervisor.snapshot(),
                     quality=quality,
+                    debug_lines=debug_lines,
                 )
 
             ok_jpg, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
@@ -1054,74 +1089,164 @@ def camera_worker(camera_idx: int, config_path: str):
                 continue
             frame_b64 = base64.b64encode(jpg.tobytes()).decode("ascii")
 
-            now = time.time()
             dt_s = max(1e-6, now - prev_loop)
             prev_loop = now
             proc_ms = (now - t_loop_start) * 1000.0
             metrics.update(
                 dt_s=dt_s,
                 proc_ms=proc_ms,
-                motors=selected_safe,
-                pose_ok=selected_pose_ok,
-                quality_score=quality["quality_score"],
+                motors=safe_motors,
+                pose_ok=pose_ok,
+                quality_score=float(quality.get("quality_score", 0.0)),
             )
 
+            ee_fk_xyz = ik_result.get("ee_fk_xyz")
+            ee_target_xyz = ee_target.get("position_xyz")
+            ee_error_norm = ik_result.get("ik_error_m")
+            center_offsets_payload = ee_mapper.export_calibration_offsets()
+            simulation_parity = {}
+            with state.lock:
+                workflow_snapshot = dict(runtime_state.get("calibration_workflow", {}))
+            if input_mode in ("scripted_target", "joint_axis_diagnostic"):
+                simulation_parity = {
+                    "raw_target_xyz": ee_target.get("raw_target_xyz"),
+                    "clamped_target_xyz": ee_target.get("clamped_target_xyz", ee_target.get("position_xyz")),
+                    "fk_xyz": ee_fk_xyz,
+                    "target_fk_error": ee_error_norm,
+                }
+            if selected_arm == "right":
+                last_visual_right = safe_motors[:]
+            else:
+                last_visual_left = safe_motors[:]
             payload = {
-                "timestamp": time.time(),
+                "timestamp": now,
                 "frame_b64": frame_b64,
-                "motors_deg": [round(v, 3) for v in selected_safe],
-                "motors_right_deg": [round(v, 3) for v in safe_right],
-                "motors_left_deg": [round(v, 3) for v in safe_left],
-                "pose_detected": bool(selected_pose_ok),
-                "hand_detected": bool(selected_hand_ok),
-                "pose_detected_right": bool(pose_ok_right),
-                "pose_detected_left": bool(pose_ok_left),
-                "hand_detected_right": bool(hand_ok_right),
-                "hand_detected_left": bool(hand_ok_left),
+                "motors_deg": [round(v, 3) for v in safe_motors],
+                "motors_right_deg": [round(v, 3) for v in last_visual_right],
+                "motors_left_deg": [round(v, 3) for v in last_visual_left],
+                "robot_cmd_deg": [round(v, 3) for v in robot_cmd],
+                "ik_output_joints_deg": [round(float(v), 3) for v in ik_output_motors],
+                "pose_detected": bool(pose_ok),
+                "hand_detected": bool(hand_ok),
+                "tracking_confidence": float(observation.get("tracking_confidence", 0.0)),
                 "selected_arm": selected_arm,
                 "trims_deg": trims,
-                "center_offsets": dict(
-                    mapper_right.center_offsets if selected_arm == "right" else mapper_left.center_offsets
-                ),
-                "human_arm_world": (
-                    human_arm_world_right if selected_arm == "right" else human_arm_world_left
-                ),
-                "human_arm_world_right": human_arm_world_right,
-                "human_arm_world_left": human_arm_world_left,
+                "center_offsets": center_offsets_payload,
+                "human_arm_world": human_arm_world,
                 "guide": GUIDE,
                 "status": "running",
-                "macro_event": macro_event
-                or (
-                    right_safety.snapshot().get("last_macro", "")
-                    if selected_arm == "right"
-                    else left_safety.snapshot().get("last_macro", "")
-                ),
+                "input_mode": input_mode,
+                "debug_mode": bool(debug_mode),
+                "macro_event": macro_event or safety_snapshot.get("last_macro", ""),
                 "quality": quality,
                 "metrics": metrics.snapshot(),
-                "safety": right_safety.snapshot() if selected_arm == "right" else left_safety.snapshot(),
-                "safety_right": right_safety.snapshot(),
-                "safety_left": left_safety.snapshot(),
+                "safety": safety_snapshot,
+                "safety_right": safety_snapshot if selected_arm == "right" else {},
+                "safety_left": safety_snapshot if selected_arm == "left" else {},
                 "trajectory": trajectory_manager.snapshot(),
                 "wizard_step": wizard_step,
-                "collision_blocked": bool(collision_blocked),
+                "ee_target": ee_target,
+                "ee_target_xyz": ee_target_xyz,
+                "ee_fk_xyz": ee_fk_xyz,
+                "ee_error_norm": ee_error_norm,
+                "ik_ok": bool(ik_result.get("ik_ok", False)),
+                "ik_error_m": ee_error_norm,
+                "ik_iterations": int(ik_result.get("ik_iterations", 0)),
+                "joint_limit_hit": bool(ik_result.get("joint_limit_hit", False)),
+                "singularity_warning": bool(ik_result.get("singularity_warning", False)),
+                "ik_fail_reason": str(ik_result.get("ik_fail_reason", "")),
+                "target_reachable": bool(ee_target.get("target_reachable", False)),
+                "target_clamped": bool(ee_target.get("target_clamped", False)),
+                "clamp_delta_xyz": ee_target.get("clamp_delta_xyz", [0.0, 0.0, 0.0]),
+                "workspace_violation_axes": ee_target.get("workspace_violation_axes", []),
+                "safety_suppressed": bool(safety_suppressed),
+                "axis_validation_report": axis_validation_report,
+                "sigma_min": ik_result.get("sigma_min"),
+                "condition_estimate": ik_result.get("condition_estimate"),
+                "simulation_parity": simulation_parity,
+                "motion_armed": bool(motion_armed),
+                "enable_motion": bool(enable_motion),
+                "hold_to_enable": bool(hold_to_enable),
+                "hold_active": bool(hold_fresh),
+                "one_axis_mode": bool(one_axis_mode),
+                "active_axis": int(_clamp(active_axis, 0, 5)),
+                "robot_command_suppressed": bool(robot_command_suppressed),
+                "collision_blocked": False,
                 "depth_right": depth_debug_right,
                 "depth_left": depth_debug_left,
+                "calibration_workflow": workflow_snapshot,
             }
+            if "joint_diagnostic" in ik_result:
+                payload["joint_diagnostic"] = ik_result["joint_diagnostic"]
             for i, v in enumerate(payload["motors_deg"], start=1):
                 payload[f"motor_{i}"] = v
 
+            if session_logger is not None:
+                try:
+                    raw_hand_target_xyz = _xyz_or_none(ee_target.get("raw_control_camera_xyz"))
+                    if raw_hand_target_xyz is None:
+                        raw_hand_target_xyz = _xyz_or_none(observation.get("raw_control_point_camera_xyz"))
+                    session_logger.log_frame(
+                        {
+                            "timestamp": float(now),
+                            "input_mode": input_mode,
+                            "hand_detected": bool(hand_ok),
+                            "tracking_confidence": float(observation.get("tracking_confidence", 0.0)),
+                            "raw_hand_target_xyz": raw_hand_target_xyz,
+                            "mapped_target_xyz": _xyz_or_none(ee_target.get("raw_target_xyz"))
+                            or _xyz_or_none(ee_target.get("position_xyz")),
+                            "clamped_target_xyz": _xyz_or_none(ee_target.get("clamped_target_xyz"))
+                            or _xyz_or_none(ee_target.get("position_xyz")),
+                            "ee_fk_xyz": _xyz_or_none(ee_fk_xyz),
+                            "ee_error_norm": float(ee_error_norm) if ee_error_norm is not None else None,
+                            "ik_ok": bool(ik_result.get("ik_ok", False)),
+                            "ik_fail_reason": str(ik_result.get("ik_fail_reason", "")),
+                            "joint_limit_hit": bool(ik_result.get("joint_limit_hit", False)),
+                            "singularity_warning": bool(ik_result.get("singularity_warning", False)),
+                            "target_reachable": bool(ee_target.get("target_reachable", False)),
+                            "target_clamped": bool(ee_target.get("target_clamped", False)),
+                            "clamp_delta_xyz": _float_list(ee_target.get("clamp_delta_xyz", [0.0, 0.0, 0.0]), n=3, default=0.0),
+                            "workspace_violation_axes": list(ee_target.get("workspace_violation_axes", [])),
+                            "safety_suppressed": bool(safety_suppressed),
+                            "motion_armed": bool(motion_armed),
+                            "hold_to_enable_active": bool(hold_fresh),
+                            "motors_deg": [float(v) for v in safe_motors],
+                        }
+                    )
+                except Exception:
+                    pass
+
             with state.lock:
                 state.latest = payload
+                runtime_state["center_offsets"] = payload["center_offsets"]
+                runtime_state["hold_active"] = bool(hold_fresh)
+                runtime_state["depth_live"] = {"right": depth_debug_right, "left": depth_debug_left}
 
             time.sleep(0.001)
+    finally:
+        if pose is not None:
+            pose.close()
+        if hands is not None:
+            hands.close()
+        if cap is not None:
+            cap.release()
+        _log_event("session_ended", {"reason": "camera_worker_exit"})
+        if session_logger is not None:
+            try:
+                session_logger.close()
+            except Exception:
+                pass
+            session_logger = None
 
-    cap.release()
+
+app = FastAPI(title="Clutch Web Teleop V3")
+app.mount("/assets", StaticFiles(directory=str(ROOT / "assets")), name="assets")
+app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+@app.on_event("startup")
+async def on_startup():
     global worker_thread
-    state.running = True
     if worker_thread is None or not worker_thread.is_alive():
         worker_thread = threading.Thread(
             target=camera_worker,
@@ -1132,21 +1257,19 @@ async def lifespan(app: FastAPI):
             daemon=True,
         )
         worker_thread.start()
-    try:
-        yield
-    finally:
-        state.running = False
 
 
-app = FastAPI(title="Clutch Web Teleop V3", lifespan=lifespan)
-app.mount("/assets", StaticFiles(directory=str(ROOT / "assets")), name="assets")
-app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
+@app.on_event("shutdown")
+async def on_shutdown():
+    state.running = False
 
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/main", response_class=HTMLResponse)
 async def landing_page():
-    return HTMLResponse(MAIN_HTML.read_text(encoding="utf-8"))
+    if MAIN_HTML.exists():
+        return HTMLResponse(MAIN_HTML.read_text(encoding="utf-8"))
+    return HTMLResponse(INDEX_HTML.read_text(encoding="utf-8"))
 
 
 @app.get("/hand-tracking-manipulation", response_class=HTMLResponse)
@@ -1155,76 +1278,99 @@ async def index():
     return HTMLResponse(INDEX_HTML.read_text(encoding="utf-8"))
 
 
-@app.get("/auki", response_class=HTMLResponse)
-async def auki_index():
-    return HTMLResponse(AUKI_INDEX_HTML.read_text(encoding="utf-8"))
-
-
-@app.get("/auki-demo", response_class=HTMLResponse)
-async def auki_demo():
-    return HTMLResponse(AUKI_DEMO_HTML.read_text(encoding="utf-8"))
-
-
 @app.get("/api/guide")
 async def api_guide():
     return JSONResponse({"guide": GUIDE})
 
 
-@app.get("/api/health")
-async def api_health():
-    with state.lock:
-        latest = dict(state.latest)
-    safety = safety_supervisor.snapshot() if safety_supervisor else {}
-    safety_r = right_safety_supervisor.snapshot() if right_safety_supervisor else {}
-    safety_l = left_safety_supervisor.snapshot() if left_safety_supervisor else {}
-    return JSONResponse(
-        {
-            "ok": True,
-            "status": latest.get("status", "unknown"),
-            "pose_detected": bool(latest.get("pose_detected", False)),
-            "hand_detected": bool(latest.get("hand_detected", False)),
-            "pose_detected_right": bool(latest.get("pose_detected_right", False)),
-            "pose_detected_left": bool(latest.get("pose_detected_left", False)),
-            "hand_detected_right": bool(latest.get("hand_detected_right", False)),
-            "hand_detected_left": bool(latest.get("hand_detected_left", False)),
-            "selected_arm": runtime_state.get("selected_arm", "right"),
-            "safety": safety,
-            "safety_right": safety_r,
-            "safety_left": safety_l,
-        }
-    )
-
-
 @app.get("/api/settings")
 async def api_settings_get():
     with state.lock:
-        sel = runtime_state["selected_arm"]
         payload = {
-            "selected_arm": sel,
+            "selected_arm": runtime_state["selected_arm"],
             "trims_deg": runtime_state["trims_deg"],
-            "motor_ranges": runtime_state["motor_ranges"],
+            "motor_ranges": runtime_state.get("motor_ranges", [[-180.0, 180.0]] * 6),
             "center_offsets": runtime_state["center_offsets"],
-            "depth_calibration": runtime_state.get("depth_calibration", {}),
+            "depth_calibration": runtime_state.get("depth_calibration", _default_depth_calibration()),
             "calibration_file": runtime_state["calibration_file"],
+            "lerobot_calibration_file": runtime_settings.get("lerobot_calibration_file", ""),
             "wizard_step": runtime_state["wizard_step"],
             "wizard_steps": runtime_state["wizard_steps"],
+            "control_mode": "ee_ik",
+            "debug_mode": bool(runtime_state["debug_mode"]),
+            "input_mode": runtime_state["input_mode"],
+            "enable_motion": bool(runtime_state.get("enable_motion", False)),
+            "hold_to_enable": bool(runtime_state.get("hold_to_enable", True)),
+            "hold_active": bool(runtime_state.get("hold_active", False)),
+            "one_axis_mode": bool(runtime_state.get("one_axis_mode", False)),
+            "active_axis": int(runtime_state.get("active_axis", 0)),
+            "calibration_workflow": runtime_state.get("calibration_workflow", {}),
         }
     payload["trajectory"] = trajectory_manager.snapshot()
-    payload["safety"] = (
-        right_safety_supervisor.snapshot() if sel == "right" else left_safety_supervisor.snapshot()
-    ) if (right_safety_supervisor and left_safety_supervisor) else {}
-    payload["safety_right"] = right_safety_supervisor.snapshot() if right_safety_supervisor else {}
-    payload["safety_left"] = left_safety_supervisor.snapshot() if left_safety_supervisor else {}
+    payload["safety"] = safety_supervisor.snapshot() if safety_supervisor else {}
     return JSONResponse(payload)
 
 
 @app.post("/api/settings")
 async def api_settings_set(payload: dict):
     arm = payload.get("selected_arm")
+    debug_mode = payload.get("debug_mode")
+    enable_motion = payload.get("enable_motion")
+    hold_to_enable = payload.get("hold_to_enable")
+    one_axis_mode = payload.get("one_axis_mode")
+    active_axis = payload.get("active_axis")
+    requested_input_mode = payload.get("input_mode")
+    changed = {}
     with state.lock:
+        prev_enable_motion = bool(runtime_state.get("enable_motion", False))
         if arm in ("left", "right"):
             runtime_state["selected_arm"] = arm
-    return JSONResponse({"ok": True, "selected_arm": runtime_state["selected_arm"]})
+            changed["selected_arm"] = arm
+        if isinstance(debug_mode, bool):
+            runtime_state["debug_mode"] = bool(debug_mode)
+            changed["debug_mode"] = bool(debug_mode)
+        if isinstance(enable_motion, bool):
+            runtime_state["enable_motion"] = bool(enable_motion)
+            if prev_enable_motion != bool(enable_motion):
+                changed["enable_motion"] = bool(enable_motion)
+        if isinstance(hold_to_enable, bool):
+            runtime_state["hold_to_enable"] = bool(hold_to_enable)
+            changed["hold_to_enable"] = bool(hold_to_enable)
+        if isinstance(one_axis_mode, bool):
+            runtime_state["one_axis_mode"] = bool(one_axis_mode)
+            changed["one_axis_mode"] = bool(one_axis_mode)
+        if active_axis is not None:
+            try:
+                runtime_state["active_axis"] = int(_clamp(int(active_axis), 0, 5))
+                changed["active_axis"] = int(runtime_state["active_axis"])
+            except Exception:
+                pass
+        active_input_mode = str(runtime_state.get("input_mode", "camera"))
+    if requested_input_mode is not None:
+        requested_mode = str(requested_input_mode).strip().lower()
+        if requested_mode and requested_mode != active_input_mode:
+            _log_event(
+                "simulation_mode_change_requested",
+                {
+                    "requested_mode": requested_mode,
+                    "active_mode": active_input_mode,
+                    "applied": False,
+                    "requires_restart": True,
+                },
+            )
+    if changed:
+        _log_event("settings_updated", changed)
+    return JSONResponse(
+        {
+            "ok": True,
+            "selected_arm": runtime_state["selected_arm"],
+            "debug_mode": bool(runtime_state["debug_mode"]),
+            "enable_motion": bool(runtime_state.get("enable_motion", False)),
+            "hold_to_enable": bool(runtime_state.get("hold_to_enable", True)),
+            "one_axis_mode": bool(runtime_state.get("one_axis_mode", False)),
+            "active_axis": int(runtime_state.get("active_axis", 0)),
+        }
+    )
 
 
 @app.post("/api/trims")
@@ -1246,64 +1392,110 @@ async def api_trims_set(payload: dict):
 @app.get("/api/safety")
 async def api_safety_get():
     snap = safety_supervisor.snapshot() if safety_supervisor is not None else {}
-    snap_r = right_safety_supervisor.snapshot() if right_safety_supervisor is not None else {}
-    snap_l = left_safety_supervisor.snapshot() if left_safety_supervisor is not None else {}
-    return JSONResponse({"ok": True, "safety": snap, "safety_right": snap_r, "safety_left": snap_l})
+    return JSONResponse({"ok": True, "safety": snap})
 
 
 @app.post("/api/safety")
 async def api_safety_set(payload: dict):
-    if right_safety_supervisor is None or left_safety_supervisor is None:
+    if safety_supervisor is None:
         return JSONResponse({"ok": False, "error": "safety_not_ready"}, status_code=503)
     action = str(payload.get("action", "")).strip().lower()
-    safety_targets = [right_safety_supervisor, left_safety_supervisor]
     if action == "toggle_freeze":
-        for s in safety_targets:
-            s.trigger_macro("toggle_freeze")
+        safety_supervisor.trigger_macro("toggle_freeze")
     elif action == "toggle_estop":
-        for s in safety_targets:
-            s.trigger_macro("toggle_estop")
+        safety_supervisor.trigger_macro("toggle_estop")
     elif action == "clear_estop":
-        for s in safety_targets:
-            s.clear_estop()
+        safety_supervisor.clear_estop()
     elif action == "home":
-        for s in safety_targets:
-            s.trigger_macro("home")
+        safety_supervisor.trigger_macro("home")
     elif action == "freeze_on":
-        for s in safety_targets:
-            s.set_freeze(True)
+        safety_supervisor.set_freeze(True)
     elif action == "freeze_off":
-        for s in safety_targets:
-            s.set_freeze(False)
+        safety_supervisor.set_freeze(False)
     else:
         return JSONResponse({"ok": False, "error": "unknown_action"}, status_code=400)
-    sel = runtime_state.get("selected_arm", "right")
-    selected_snap = (
-        right_safety_supervisor.snapshot() if sel == "right" else left_safety_supervisor.snapshot()
-    )
-    return JSONResponse(
-        {
-            "ok": True,
-            "safety": selected_snap,
-            "safety_right": right_safety_supervisor.snapshot(),
-            "safety_left": left_safety_supervisor.snapshot(),
-        }
-    )
+    return JSONResponse({"ok": True, "safety": safety_supervisor.snapshot()})
 
 
 @app.post("/api/reset")
 async def api_reset():
-    if right_safety_supervisor is not None:
-        right_safety_supervisor.set_freeze(False)
-        right_safety_supervisor.clear_estop()
-        right_safety_supervisor.trigger_macro("home")
-    if left_safety_supervisor is not None:
-        left_safety_supervisor.set_freeze(False)
-        left_safety_supervisor.clear_estop()
-        left_safety_supervisor.trigger_macro("home")
+    if safety_supervisor is not None:
+        safety_supervisor.set_freeze(False)
+        safety_supervisor.clear_estop()
+        safety_supervisor.trigger_macro("home")
+    try:
+        cfg = load_config(runtime_settings["config_path"])
+        home = _home_motors_from_config(cfg)
+    except Exception:
+        home = [0.0] * 6
     with state.lock:
-        state.reset_request = True
+        state.latest["motors_deg"] = [float(v) for v in home]
+        state.latest["motors_right_deg"] = [float(v) for v in home]
+        state.latest["motors_left_deg"] = [float(v) for v in home]
+        for i, v in enumerate(home, start=1):
+            state.latest[f"motor_{i}"] = float(v)
+    _log_event("reset_requested", {"home_motors_deg": home})
     return JSONResponse({"ok": True})
+
+
+@app.get("/api/depth_calibration")
+async def api_depth_calibration_get():
+    with state.lock:
+        payload = runtime_state.get("depth_calibration", _default_depth_calibration())
+    return JSONResponse({"ok": True, "depth_calibration": payload})
+
+
+@app.post("/api/depth_calibration")
+async def api_depth_calibration_set(payload: dict):
+    action = str(payload.get("action", "")).strip().lower()
+    side = str(payload.get("side", runtime_state.get("selected_arm", "right"))).strip().lower()
+    if side not in ("left", "right"):
+        side = "right"
+
+    with state.lock:
+        depth_cfg = runtime_state.get("depth_calibration")
+        if not isinstance(depth_cfg, dict):
+            depth_cfg = _default_depth_calibration()
+        if side not in depth_cfg or not isinstance(depth_cfg[side], dict):
+            depth_cfg[side] = {"neutral": None, "near": None, "far": None}
+
+        latest_ee = state.latest.get("ee_target", {})
+        raw_xyz = (
+            _xyz_or_none(latest_ee.get("raw_control_camera_xyz"))
+            or _xyz_or_none(latest_ee.get("mapped_control_camera_xyz"))
+            or _xyz_or_none(state.latest.get("ee_target_xyz"))
+        )
+        raw_z = float(raw_xyz[2]) if raw_xyz is not None else None
+
+        if action == "reset":
+            depth_cfg[side] = {"neutral": None, "near": None, "far": None}
+        elif action in ("capture_neutral", "capture_near", "capture_far"):
+            if raw_z is None:
+                return JSONResponse({"ok": False, "error": "raw_depth_not_ready"}, status_code=503)
+            key = action.split("_", 1)[1]
+            depth_cfg[side][key] = float(raw_z)
+        else:
+            return JSONResponse({"ok": False, "error": "unknown_action"}, status_code=400)
+
+        runtime_state["depth_calibration"] = depth_cfg
+        depth_debug = _depth_debug_from_raw(raw_z, depth_cfg.get(side, {}))
+        depth_live = runtime_state.get("depth_live")
+        if not isinstance(depth_live, dict):
+            depth_live = {"right": {}, "left": {}}
+        depth_live[side] = depth_debug
+        runtime_state["depth_live"] = depth_live
+        result_cfg = dict(depth_cfg)
+
+    _log_event(
+        "depth_calibration_updated",
+        {
+            "action": action,
+            "side": side,
+            "raw_depth_z": raw_z,
+            "depth_calibration": result_cfg.get(side, {}),
+        },
+    )
+    return JSONResponse({"ok": True, "depth_calibration": result_cfg, "side": side})
 
 
 @app.get("/api/trajectory")
@@ -1423,55 +1615,245 @@ async def api_validation_run(payload: dict):
 async def api_calibration_save():
     with state.lock:
         calib_file = runtime_state["calibration_file"]
+        config_path = runtime_settings["config_path"]
     try:
-        payload = save_calibration_to_file(calib_file)
+        payload = save_calibration_to_file(calib_file, config_path=config_path)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-    return JSONResponse({"ok": True, "calibration_file": calib_file, "data": payload})
+    _log_event(
+        "config_corrections_applied",
+        {
+            "source": "api_calibration_save",
+            "calibration_file": str(calib_file),
+            "config_path": str(config_path),
+            "center_offsets": payload.get("center_offsets", {}),
+        },
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "calibration_file": calib_file,
+            "config_path": config_path,
+            "data": payload,
+        }
+    )
 
 
 @app.post("/api/calibrate")
 async def api_calibrate():
     with state.lock:
         state.calibrate_request = True
-    return JSONResponse({"ok": True, "message": "Calibration requested."})
+    _log_event("neutral_capture_requested", {"source": "api_calibrate"})
+    return JSONResponse({"ok": True, "message": "EE neutral calibration requested."})
 
 
-@app.get("/api/depth_calibration")
-async def api_depth_calibration_get():
+@app.get("/api/calibration/workflow")
+async def api_calibration_workflow_get():
     with state.lock:
-        out = {
-            "selected_arm": runtime_state["selected_arm"],
-            "depth_calibration": runtime_state.get("depth_calibration", {}),
-            "pending_capture": dict(state.depth_capture_request),
-        }
-    return JSONResponse({"ok": True, **out})
+        wf = runtime_state.get("calibration_workflow", {})
+    return JSONResponse({"ok": True, "workflow": wf})
 
 
-@app.post("/api/depth_calibration")
-async def api_depth_calibration_set(payload: dict):
+@app.post("/api/calibration/workflow")
+async def api_calibration_workflow_post(payload: dict):
     action = str(payload.get("action", "")).strip().lower()
-    side = str(payload.get("side", "")).strip().lower()
+    axis_name = str(payload.get("axis", "")).strip().lower()
+    event_fields = {}
+    event_type = ""
     with state.lock:
-        if side not in ("left", "right"):
-            side = runtime_state["selected_arm"]
-        if action in ("capture_neutral", "capture_near", "capture_far"):
-            key = action.split("_", 1)[1]
-            state.depth_capture_request[side] = key
-            out = {
-                "depth_calibration": runtime_state.get("depth_calibration", {}),
-                "pending_capture": dict(state.depth_capture_request),
+        wf = runtime_state.get("calibration_workflow")
+        if not isinstance(wf, dict):
+            wf = _new_calibration_workflow()
+
+        if action == "start":
+            wf = _new_calibration_workflow()
+            runtime_state["calibration_workflow"] = wf
+            runtime_state["pending_calibration_capture"] = ""
+            runtime_state["pending_neutral_ee_reference"] = None
+            event_type = "calibration_workflow_step"
+            event_fields = {"action": action, "step": int(wf.get("step", 1)), "status": str(wf.get("status", ""))}
+        elif action == "step1_done":
+            wf["step"] = max(int(wf.get("step", 1)), 1)
+            wf["status"] = "step_1_home_confirmed"
+            if safety_supervisor is not None:
+                safety_supervisor.trigger_macro("home")
+            runtime_state["calibration_workflow"] = wf
+            event_type = "calibration_workflow_step"
+            event_fields = {"action": action, "step": int(wf.get("step", 1)), "status": str(wf.get("status", ""))}
+        elif action == "capture_robot_neutral":
+            ee_fk = state.latest.get("ee_fk_xyz")
+            if not (isinstance(ee_fk, list) and len(ee_fk) == 3):
+                return JSONResponse({"ok": False, "error": "ee_fk_not_ready"}, status_code=503)
+            wf["robot_neutral_ee_xyz"] = [float(ee_fk[0]), float(ee_fk[1]), float(ee_fk[2])]
+            cx = float(runtime_state.get("center_offsets", {}).get("workspace_center_x", 0.0))
+            cy = float(runtime_state.get("center_offsets", {}).get("workspace_center_y", 0.0))
+            cz = float(runtime_state.get("center_offsets", {}).get("workspace_center_z", 0.0))
+            wf["axis_offset_correction_m"] = [float(ee_fk[0]) - cx, float(ee_fk[1]) - cy, float(ee_fk[2]) - cz]
+            wf["step"] = max(int(wf.get("step", 1)), 2)
+            wf["status"] = "step_2_robot_neutral_captured"
+            runtime_state["center_offsets"] = _sync_workflow_corrections_to_center_offsets(wf, runtime_state.get("center_offsets", {}))
+            runtime_state["calibration_workflow"] = wf
+            event_type = "robot_neutral_capture"
+            event_fields = {
+                "action": action,
+                "step": int(wf.get("step", 1)),
+                "status": str(wf.get("status", "")),
+                "robot_neutral_ee_xyz": wf.get("robot_neutral_ee_xyz"),
+                "axis_offset_correction_m": wf.get("axis_offset_correction_m"),
             }
-            return JSONResponse({"ok": True, **out})
-        if action == "reset":
-            runtime_state["depth_calibration"][side] = {"neutral": None, "near": None, "far": None}
-            state.depth_capture_request[side] = ""
-            out = {
-                "depth_calibration": runtime_state.get("depth_calibration", {}),
-                "pending_capture": dict(state.depth_capture_request),
+        elif action == "capture_hand_neutral":
+            robot_neutral = wf.get("robot_neutral_ee_xyz")
+            if not (isinstance(robot_neutral, list) and len(robot_neutral) == 3):
+                return JSONResponse({"ok": False, "error": "capture_robot_neutral_first"}, status_code=400)
+            runtime_state["pending_calibration_capture"] = "hand_neutral"
+            runtime_state["pending_neutral_ee_reference"] = [float(robot_neutral[0]), float(robot_neutral[1]), float(robot_neutral[2])]
+            wf["status"] = "step_3_pending_hand_neutral_capture"
+            runtime_state["calibration_workflow"] = wf
+            event_type = "calibration_workflow_step"
+            event_fields = {
+                "action": action,
+                "step": int(wf.get("step", 1)),
+                "status": str(wf.get("status", "")),
+                "robot_neutral_ee_xyz": robot_neutral,
             }
-            return JSONResponse({"ok": True, **out})
-    return JSONResponse({"ok": False, "error": "unknown_action"}, status_code=400)
+        elif action == "test_axis":
+            if axis_name not in ("x", "y", "z"):
+                return JSONResponse({"ok": False, "error": "axis_required_x_y_z"}, status_code=400)
+            _evaluate_axis_test(wf, state.latest, axis_name=axis_name)
+            wf["step"] = max(int(wf.get("step", 1)), 3 + {"x": 1, "y": 2, "z": 3}[axis_name])
+            wf["status"] = f"step_test_{axis_name}_completed"
+            runtime_state["center_offsets"] = _sync_workflow_corrections_to_center_offsets(wf, runtime_state.get("center_offsets", {}))
+            runtime_state["calibration_workflow"] = wf
+            event_type = "calibration_workflow_step"
+            event_fields = {
+                "action": action,
+                "axis": axis_name,
+                "step": int(wf.get("step", 1)),
+                "status": str(wf.get("status", "")),
+                "axis_test": wf.get("axis_tests", {}).get(axis_name),
+            }
+        elif action == "save":
+            runtime_state["center_offsets"] = _sync_workflow_corrections_to_center_offsets(wf, runtime_state.get("center_offsets", {}))
+            wf["active"] = False
+            wf["status"] = "saved"
+            runtime_state["calibration_workflow"] = wf
+            calib_file = runtime_state["calibration_file"]
+            cfg_path = runtime_settings["config_path"]
+            try:
+                saved = save_calibration_to_file(calib_file, config_path=cfg_path)
+            except Exception as exc:
+                return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+            _log_event(
+                "calibration_workflow_step",
+                {
+                    "action": action,
+                    "step": int(wf.get("step", 0)),
+                    "status": str(wf.get("status", "")),
+                },
+            )
+            _log_event(
+                "config_corrections_applied",
+                {
+                    "source": "calibration_workflow_save",
+                    "step": int(wf.get("step", 0)),
+                    "status": str(wf.get("status", "")),
+                    "axis_sign_correction": wf.get("axis_sign_correction"),
+                    "axis_scale_correction": wf.get("axis_scale_correction"),
+                    "axis_offset_correction_m": wf.get("axis_offset_correction_m"),
+                    "calibration_file": str(calib_file),
+                    "config_path": str(cfg_path),
+                    "center_offsets": saved.get("center_offsets", {}),
+                },
+            )
+            return JSONResponse({"ok": True, "workflow": wf, "saved": saved})
+        else:
+            return JSONResponse({"ok": False, "error": "unknown_action"}, status_code=400)
+    if event_type:
+        _log_event(event_type, event_fields)
+    return JSONResponse({"ok": True, "workflow": runtime_state.get("calibration_workflow", {})})
+
+
+@app.get("/api/motion")
+async def api_motion_get():
+    with state.lock:
+        payload = {
+            "ok": True,
+            "enable_motion": bool(runtime_state.get("enable_motion", False)),
+            "hold_to_enable": bool(runtime_state.get("hold_to_enable", True)),
+            "hold_active": bool(runtime_state.get("hold_active", False)),
+            "one_axis_mode": bool(runtime_state.get("one_axis_mode", False)),
+            "active_axis": int(runtime_state.get("active_axis", 0)),
+        }
+    return JSONResponse(payload)
+
+
+@app.post("/api/motion")
+async def api_motion_set(payload: dict):
+    motion_event = {}
+    with state.lock:
+        prev_enable = bool(runtime_state.get("enable_motion", False))
+        prev_hold_to_enable = bool(runtime_state.get("hold_to_enable", True))
+        prev_one_axis = bool(runtime_state.get("one_axis_mode", False))
+        prev_active_axis = int(runtime_state.get("active_axis", 0))
+        if "enable_motion" in payload:
+            runtime_state["enable_motion"] = bool(payload.get("enable_motion"))
+        if "hold_to_enable" in payload:
+            runtime_state["hold_to_enable"] = bool(payload.get("hold_to_enable"))
+        if "one_axis_mode" in payload:
+            runtime_state["one_axis_mode"] = bool(payload.get("one_axis_mode"))
+        if "active_axis" in payload:
+            try:
+                runtime_state["active_axis"] = int(_clamp(int(payload.get("active_axis")), 0, 5))
+            except Exception:
+                pass
+        if "hold_active" in payload:
+            runtime_state["hold_active"] = bool(payload.get("hold_active"))
+            runtime_state["hold_last_ts"] = time.time() if runtime_state["hold_active"] else 0.0
+        out = {
+            "ok": True,
+            "enable_motion": bool(runtime_state.get("enable_motion", False)),
+            "hold_to_enable": bool(runtime_state.get("hold_to_enable", True)),
+            "hold_active": bool(runtime_state.get("hold_active", False)),
+            "one_axis_mode": bool(runtime_state.get("one_axis_mode", False)),
+            "active_axis": int(runtime_state.get("active_axis", 0)),
+        }
+        if prev_enable != out["enable_motion"]:
+            motion_event["enable_motion"] = out["enable_motion"]
+        if prev_hold_to_enable != out["hold_to_enable"]:
+            motion_event["hold_to_enable"] = out["hold_to_enable"]
+        if prev_one_axis != out["one_axis_mode"]:
+            motion_event["one_axis_mode"] = out["one_axis_mode"]
+        if prev_active_axis != out["active_axis"]:
+            motion_event["active_axis"] = out["active_axis"]
+    if motion_event:
+        _log_event("motion_settings_updated", motion_event)
+    return JSONResponse(out)
+
+
+@app.get("/api/debug")
+async def api_debug_get():
+    with state.lock:
+        payload = {"ok": True, "debug_mode": bool(runtime_state["debug_mode"])}
+    return JSONResponse(payload)
+
+
+@app.post("/api/debug")
+async def api_debug_set(payload: dict):
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        return JSONResponse({"ok": False, "error": "enabled_bool_required"}, status_code=400)
+    with state.lock:
+        runtime_state["debug_mode"] = bool(enabled)
+    return JSONResponse({"ok": True, "debug_mode": bool(enabled)})
+
+
+@app.get("/api/diagnostics/joint_axes")
+async def api_diagnostics_joint_axes():
+    with state.lock:
+        report = state.latest.get("axis_validation_report", None)
+    if report is None:
+        return JSONResponse({"ok": False, "error": "diagnostics_not_ready"}, status_code=503)
+    return JSONResponse({"ok": True, "report": report})
 
 
 @app.websocket("/ws")
@@ -1522,11 +1904,21 @@ def main():
     runtime_settings["host"] = args.host
     runtime_settings["port"] = args.port
     cfg = load_config(runtime_settings["config_path"])
+    runtime_settings["lerobot_calibration_file"] = str(cfg.get("lerobot_calibration_file", "")).strip()
     runtime_state["selected_arm"] = args.arm_side
-    runtime_state["motor_ranges"] = [
-        [float(m.get("min_deg", -180.0)), float(m.get("max_deg", 180.0))]
-        for m in cfg.get("motors", [])
-    ]
+    runtime_state["motor_ranges"] = _motor_ranges_from_config(cfg)
+    runtime_state["debug_mode"] = bool(cfg.get("debug_mode", runtime_state.get("debug_mode", False)))
+    hw_cfg = cfg.get("hardware_validation", {})
+    runtime_state["enable_motion"] = bool(hw_cfg.get("enable_motion_default", False))
+    runtime_state["hold_to_enable"] = bool(hw_cfg.get("hold_to_enable", True))
+    runtime_state["one_axis_mode"] = bool(hw_cfg.get("one_axis_mode", False))
+    runtime_state["active_axis"] = int(_clamp(int(hw_cfg.get("active_axis", 0)), 0, 5))
+    runtime_state["calibration_workflow"] = _new_calibration_workflow()
+    runtime_state["calibration_workflow"]["active"] = False
+    runtime_state["calibration_workflow"]["step"] = 0
+    runtime_state["calibration_workflow"]["status"] = "idle"
+    runtime_state["depth_calibration"] = _default_depth_calibration()
+    runtime_state["depth_live"] = {"right": {}, "left": {}}
     calib_rel = cfg.get("calibration_file", str(ROOT / "calibration.runtime.json"))
     runtime_state["calibration_file"] = str((Path(calib_rel) if Path(calib_rel).is_absolute() else (PROJECT_ROOT / calib_rel)).resolve())
     load_saved_calibration(runtime_state["calibration_file"])

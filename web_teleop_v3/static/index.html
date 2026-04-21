@@ -255,6 +255,12 @@
     button:hover, select:hover {
       border-color: #3a3a3a;
     }
+    .controls button.active,
+    .adv-grid button.active {
+      border-color: rgba(109, 250, 170, 0.72);
+      color: #d8ffe9;
+      background: rgba(28, 46, 34, 0.95);
+    }
     .row-2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -324,6 +330,44 @@
     }
     .guide-item strong { color: #9ecbff; }
     .muted { font-size: 12px; color: var(--muted); }
+    .adv-tools {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #101010;
+      padding: 8px;
+      margin-top: 2px;
+    }
+    .adv-tools summary {
+      cursor: pointer;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #d6d6d6;
+      list-style: none;
+    }
+    .adv-tools summary::-webkit-details-marker {
+      display: none;
+    }
+    .adv-grid {
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .adv-grid .full {
+      grid-column: 1 / -1;
+    }
+    .adv-grid button,
+    .adv-grid select {
+      min-height: 30px;
+      padding: 6px 8px;
+      font-size: 11px;
+    }
+    .adv-diag {
+      margin-top: 8px;
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+    }
 
     @media (max-width: 1180px) {
       .shell {
@@ -376,6 +420,7 @@
       <span id="handBadge" class="badge">hand:false</span>
       <span id="freezeBadge" class="badge">freeze:false</span>
       <span id="estopBadge" class="badge">estop:false</span>
+      <span id="motionBadge" class="badge">motion:disarmed</span>
       <span id="statusBadge" class="badge">status:booting</span>
     </div>
   </header>
@@ -426,6 +471,38 @@
             <div class="row-2 full">
               <button id="playBtn">Play</button>
               <button id="stopPlayBtn">Stop Play</button>
+            </div>
+            <div class="full">
+              <details class="adv-tools" id="eeToolsBox">
+                <summary>EE / IK Tools (Optional)</summary>
+                <div class="adv-grid">
+                  <button id="debugBtn">Debug Off</button>
+                  <button id="armMotionBtn">Motion Disarmed</button>
+                  <button id="holdBtn">Hold-to-Enable</button>
+                  <button id="oneAxisBtn">One-Axis Off</button>
+                  <select id="axisSelect">
+                    <option value="0">Axis 1</option>
+                    <option value="1">Axis 2</option>
+                    <option value="2">Axis 3</option>
+                    <option value="3">Axis 4</option>
+                    <option value="4">Axis 5</option>
+                    <option value="5">Axis 6</option>
+                  </select>
+                  <button id="wfStartBtn">WF Start</button>
+                  <button id="wfStep1Btn">WF Step1</button>
+                  <button id="wfCapRobotBtn">WF Robot Neutral</button>
+                  <button id="wfCapHandBtn">WF Hand Neutral</button>
+                  <button id="wfTestXBtn">WF +X</button>
+                  <button id="wfTestYBtn">WF +Y</button>
+                  <button id="wfTestZBtn">WF +Z</button>
+                  <button id="wfSaveBtn">WF Save</button>
+                </div>
+                <div class="adv-diag">
+                  <div class="muted" id="eeDiagLine">ee: -</div>
+                  <div class="muted" id="eeReachLine">reach: -</div>
+                  <div class="muted" id="wfDiagLine">workflow: -</div>
+                </div>
+              </details>
             </div>
           </div>
         </section>
@@ -647,6 +724,7 @@
     const handBadge = document.getElementById("handBadge");
     const freezeBadge = document.getElementById("freezeBadge");
     const estopBadge = document.getElementById("estopBadge");
+    const motionBadge = document.getElementById("motionBadge");
     const statusBadge = document.getElementById("statusBadge");
     const armSelect = document.getElementById("armSelect");
     const calibrateBtn = document.getElementById("calibrateBtn");
@@ -663,11 +741,27 @@
     const recStopBtn = document.getElementById("recStopBtn");
     const playBtn = document.getElementById("playBtn");
     const stopPlayBtn = document.getElementById("stopPlayBtn");
+    const debugBtn = document.getElementById("debugBtn");
+    const armMotionBtn = document.getElementById("armMotionBtn");
+    const holdBtn = document.getElementById("holdBtn");
+    const oneAxisBtn = document.getElementById("oneAxisBtn");
+    const axisSelect = document.getElementById("axisSelect");
+    const wfStartBtn = document.getElementById("wfStartBtn");
+    const wfStep1Btn = document.getElementById("wfStep1Btn");
+    const wfCapRobotBtn = document.getElementById("wfCapRobotBtn");
+    const wfCapHandBtn = document.getElementById("wfCapHandBtn");
+    const wfTestXBtn = document.getElementById("wfTestXBtn");
+    const wfTestYBtn = document.getElementById("wfTestYBtn");
+    const wfTestZBtn = document.getElementById("wfTestZBtn");
+    const wfSaveBtn = document.getElementById("wfSaveBtn");
     const trajSelect = document.getElementById("trajSelect");
     const motorGrid = document.getElementById("motorGrid");
     const guideEl = document.getElementById("guide");
     const wizardBox = document.getElementById("wizardBox");
     const metricsBox = document.getElementById("metricsBox");
+    const eeDiagLine = document.getElementById("eeDiagLine");
+    const eeReachLine = document.getElementById("eeReachLine");
+    const wfDiagLine = document.getElementById("wfDiagLine");
 
     const motorNames = ["Base", "Shoulder", "Elbow", "Wrist Flex", "Wrist Roll", "Gripper"];
     let motorRanges = [[-160,160],[-90,90],[-120,120],[-180,180],[-90,90],[0,90]];
@@ -783,6 +877,74 @@
           <div class="muted">macro: ${macroEvent || "-"}</div>
         </div>
       `;
+    }
+
+    function fmtVec3(v) {
+      if (!Array.isArray(v) || v.length !== 3) return "-";
+      return `${Number(v[0]).toFixed(3)}, ${Number(v[1]).toFixed(3)}, ${Number(v[2]).toFixed(3)}`;
+    }
+
+    function renderEEState(data) {
+      const err = (typeof data.ee_error_norm === "number") ? data.ee_error_norm.toFixed(4) : "-";
+      eeDiagLine.textContent = `ee_target:${fmtVec3(data.ee_target_xyz)} | fk:${fmtVec3(data.ee_fk_xyz)} | err:${err}`;
+      eeReachLine.textContent =
+        `ik_ok:${!!data.ik_ok} | reach:${!!data.target_reachable} | clamped:${!!data.target_clamped} | ` +
+        `joint_limit:${!!data.joint_limit_hit} | singularity:${!!data.singularity_warning}`;
+      const wf = data.calibration_workflow || {};
+      wfDiagLine.textContent = `workflow step:${wf.step ?? "-"} status:${wf.status || "-"} active:${!!wf.active}`;
+    }
+
+    function applyMotionUI(state) {
+      if (typeof state.debug_mode === "boolean") {
+        debugBtn.textContent = state.debug_mode ? "Debug On" : "Debug Off";
+        debugBtn.classList.toggle("active", !!state.debug_mode);
+      }
+      if (typeof state.enable_motion === "boolean") {
+        armMotionBtn.textContent = state.enable_motion ? "Motion Armed" : "Motion Disarmed";
+        armMotionBtn.classList.toggle("active", !!state.enable_motion);
+      }
+      if (typeof state.one_axis_mode === "boolean") {
+        oneAxisBtn.textContent = state.one_axis_mode ? "One-Axis On" : "One-Axis Off";
+        oneAxisBtn.classList.toggle("active", !!state.one_axis_mode);
+      }
+      if (typeof state.active_axis === "number") {
+        axisSelect.value = String(state.active_axis);
+      }
+      if (typeof state.hold_active === "boolean") {
+        holdBtn.classList.toggle("active", !!state.hold_active);
+      }
+    }
+
+    async function setMotionState(patch) {
+      try {
+        const r = await fetch("/api/motion", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        const d = await r.json();
+        if (d.ok) applyMotionUI(d);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function postWorkflow(action, axis = "") {
+      try {
+        const body = { action };
+        if (axis) body.axis = axis;
+        const r = await fetch("/api/calibration/workflow", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          wfDiagLine.textContent = `workflow step:${d.workflow.step ?? "-"} status:${d.workflow.status || "-"} active:${!!d.workflow.active}`;
+        }
+      } catch (e) {
+        console.error(e);
+      }
     }
 
     async function setWizard(action) {
@@ -942,6 +1104,64 @@
       await fetch("/api/trajectory/stop_playback", { method: "POST" });
     });
 
+    debugBtn.addEventListener("click", async () => {
+      const enable = !debugBtn.classList.contains("active");
+      try {
+        const r = await fetch("/api/debug", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: enable }),
+        });
+        const d = await r.json();
+        if (d.ok) applyMotionUI({ debug_mode: !!d.debug_mode });
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    armMotionBtn.addEventListener("click", async () => {
+      const enable = !armMotionBtn.classList.contains("active");
+      await setMotionState({ enable_motion: enable });
+    });
+
+    oneAxisBtn.addEventListener("click", async () => {
+      const enable = !oneAxisBtn.classList.contains("active");
+      await setMotionState({ one_axis_mode: enable });
+    });
+
+    axisSelect.addEventListener("change", async () => {
+      await setMotionState({ active_axis: parseInt(axisSelect.value, 10) || 0 });
+    });
+
+    let holdPulseTimer = null;
+    async function setHold(active) {
+      if (active) {
+        if (holdPulseTimer) return;
+        await setMotionState({ hold_active: true });
+        holdPulseTimer = setInterval(() => setMotionState({ hold_active: true }), 180);
+      } else {
+        if (holdPulseTimer) {
+          clearInterval(holdPulseTimer);
+          holdPulseTimer = null;
+        }
+        await setMotionState({ hold_active: false });
+      }
+    }
+    holdBtn.addEventListener("mousedown", () => setHold(true));
+    holdBtn.addEventListener("mouseup", () => setHold(false));
+    holdBtn.addEventListener("mouseleave", () => setHold(false));
+    holdBtn.addEventListener("touchstart", (e) => { e.preventDefault(); setHold(true); });
+    holdBtn.addEventListener("touchend", (e) => { e.preventDefault(); setHold(false); });
+
+    wfStartBtn.addEventListener("click", () => postWorkflow("start"));
+    wfStep1Btn.addEventListener("click", () => postWorkflow("step1_done"));
+    wfCapRobotBtn.addEventListener("click", () => postWorkflow("capture_robot_neutral"));
+    wfCapHandBtn.addEventListener("click", () => postWorkflow("capture_hand_neutral"));
+    wfTestXBtn.addEventListener("click", () => postWorkflow("test_axis", "x"));
+    wfTestYBtn.addEventListener("click", () => postWorkflow("test_axis", "y"));
+    wfTestZBtn.addEventListener("click", () => postWorkflow("test_axis", "z"));
+    wfSaveBtn.addEventListener("click", () => postWorkflow("save"));
+
     if (camToggleBtn) camToggleBtn.addEventListener("click", () => setCameraLive(cameraPaused));
 
     async function initSettings() {
@@ -949,6 +1169,12 @@
         const r = await fetch("/api/settings");
         const s = await r.json();
         if (s.selected_arm) armSelect.value = s.selected_arm;
+        applyMotionUI(s);
+        if (s.calibration_workflow) {
+          wfDiagLine.textContent =
+            `workflow step:${s.calibration_workflow.step ?? "-"} ` +
+            `status:${s.calibration_workflow.status || "-"} active:${!!s.calibration_workflow.active}`;
+        }
         if (Array.isArray(s.motor_ranges) && s.motor_ranges.length === 6) {
           motorRanges = s.motor_ranges.map((pair, i) => {
             if (!Array.isArray(pair) || pair.length < 2) return motorRanges[i];
@@ -1014,7 +1240,9 @@
       setBadge(handBadge, `hand:${!!data.hand_detected}`, !!data.hand_detected);
       setBadge(freezeBadge, `freeze:${!!(data.safety && data.safety.freeze)}`, !!(data.safety && data.safety.freeze));
       setBadge(estopBadge, `estop:${!!(data.safety && data.safety.estop)}`, !!(data.safety && data.safety.estop));
+      setBadge(motionBadge, `motion:${data.motion_armed ? "armed" : "disarmed"}`, !!data.motion_armed);
       statusBadge.textContent = `status:${data.status || "unknown"}`;
+      applyMotionUI(data);
       renderMetrics(
         data.metrics,
         data.quality,
@@ -1026,6 +1254,7 @@
         data.depth_right,
         data.depth_left
       );
+      renderEEState(data);
       if (data.wizard_step && lastWizard && data.wizard_step !== lastWizard.step) {
         // keep wizard in sync if changed elsewhere
         setWizard(`goto:${data.wizard_step}`);
