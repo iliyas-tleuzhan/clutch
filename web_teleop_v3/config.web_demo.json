@@ -1,0 +1,188 @@
+{
+  "arm_side": "right",
+  "calibration_file": "web_teleop_v3/calibration.runtime.json",
+  "lerobot_calibration_file": "C:\\Users\\user\\.cache\\huggingface\\lerobot\\calibration\\robots\\so101_follower\\Group_Follower.json",
+  "smoothing_alpha": 0.2,
+  "feature_smoothing_alpha": 0.28,
+  "deadzone_deg": 0.7,
+  "feature_deadzone": 0.12,
+  "max_step_deg": [5.0, 5.0, 6.0, 7.0, 6.0, 8.0],
+  "lost_pose_hold_frames": 8,
+  "pose_visibility_threshold": 0.35,
+  "quality_low_light_threshold": 45.0,
+  "quality_blur_threshold": 35.0,
+  "metrics_window": 120,
+  "debug_mode": false,
+  "gesture_macros_enabled": true,
+  "gesture_hold_seconds": 0.9,
+  "gesture_cooldown_seconds": 2.0,
+  "safety_require_pose": true,
+  "safety_require_hand": false,
+  "safety_lost_hold_frames": 10,
+  "safety_max_step_deg": [8.0, 8.0, 9.0, 10.0, 8.0, 12.0],
+  "lost_mode": "hold",
+  "hand_tracker": {
+    "position_alpha": 0.3,
+    "confidence_alpha": 0.45,
+    "min_hand_span": 0.02,
+    "fallback_wrist_confidence": 0.35
+  },
+  "ee_target_mapper": {
+    "workspace_center_m": [0.22, 0.0, 0.14],
+    "workspace_half_extents_m": [0.16, 0.2, 0.16],
+    "position_scale_m_per_camera_unit": [0.55, 0.55, 0.75],
+    "camera_to_robot_rotation": [
+      [0.0, 0.0, -1.0],
+      [1.0, 0.0, 0.0],
+      [0.0, -1.0, 0.0]
+    ],
+    "axis_sign_correction": [1.0, 1.0, 1.0],
+    "axis_scale_correction": [1.0, 1.0, 1.0],
+    "axis_offset_correction_m": [0.0, 0.0, 0.0],
+    "mirror_y_for_left_arm": true,
+    "position_alpha": 0.28,
+    "position_deadzone_m": 0.004,
+    "min_tracking_confidence": 0.25,
+    "target_min_reachable_margin_m": 0.002,
+    "grip_from_pinch": {
+      "pinch_closed_ratio": 0.3,
+      "pinch_open_ratio": 1.0,
+      "default_closedness": 0.1,
+      "grip_alpha": 0.35
+    },
+    "gripper_motor": {
+      "open_deg": 8.0,
+      "closed_deg": 78.0
+    }
+  },
+  "ik_solver": {
+    "position_joint_count": 5,
+    "joint_axes": ["y", "z", "z", "x", "z"],
+    "joint_axis_signs": [1, 1, 1, 1, 1],
+    "link_vectors_m": [
+      [0.1, 0.0, 0.0],
+      [0.18, 0.0, 0.0],
+      [0.19, 0.0, 0.0],
+      [0.1, 0.0, 0.0],
+      [0.08, 0.0, 0.0]
+    ],
+    "base_offset_m": [0.0, 0.0, 0.0],
+    "max_iterations": 12,
+    "convergence_eps_m": 0.004,
+    "max_error_m": 0.08,
+    "damping": 0.08,
+    "low_confidence_damping_scale": 2.5,
+    "low_confidence_threshold": 0.35,
+    "regularization_to_previous": 0.08,
+    "posture_regularization": 0.02,
+    "joint_limit_margin_deg": 1.5,
+    "singularity_sigma_min_threshold": 0.01,
+    "singularity_condition_threshold": 250.0,
+    "initial_guess_deg": [0.0, -35.0, 70.0, 0.0, 35.0],
+    "max_step_deg_per_update": [7.0, 7.0, 8.0, 9.0, 8.0]
+  },
+  "simulation": {
+    "mode": "camera",
+    "frame_width": 1280,
+    "frame_height": 720,
+    "target_center_m": [0.22, 0.0, 0.14],
+    "target_amplitude_m": [0.08, 0.08, 0.05],
+    "target_frequency_hz": [0.13, 0.17, 0.11],
+    "target_phase_rad": [0.0, 1.1, 2.2],
+    "joint_diag_step_deg": 5.0,
+    "joint_diag_hold_seconds": 2.2
+  },
+  "hardware_validation": {
+    "enabled": true,
+    "enable_motion_default": false,
+    "hold_to_enable": true,
+    "hold_timeout_sec": 0.45,
+    "max_step_deg_per_frame": [0.8, 0.8, 0.9, 0.9, 0.9, 1.2],
+    "one_axis_mode": false,
+    "active_axis": 0
+  },
+  "session_logging": {
+    "enabled": true,
+    "logs_dir": "logs",
+    "file_name_template": "session_{run_id}.jsonl"
+  },
+  "feature_ranges": {
+    "base_yaw": { "min": -70.0, "max": 70.0, "center_calibrated": true, "center_offset": 0.0 },
+    "shoulder_pitch": { "min": -55.0, "max": 80.0, "center_calibrated": true, "center_offset": 0.0 },
+    "elbow_bend": { "min": -100.0, "max": 100.0, "center_calibrated": true, "center_offset": 0.0 },
+    "forearm_roll": { "min": -120.0, "max": 120.0, "center_calibrated": true, "center_offset": 0.0 },
+    "wrist_pitch": { "min": -90.0, "max": 90.0, "center_calibrated": true, "center_offset": 0.0 },
+    "gripper": { "min": 0.75, "max": 2.2, "center_calibrated": false, "center_offset": 0.0 }
+  },
+  "motors": [
+    {
+      "id": "motor_1",
+      "feature_source": "base_yaw",
+      "min_deg": -160.0,
+      "max_deg": 160.0,
+      "home_deg": 0.0,
+      "mapping": "delta",
+      "invert": false,
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_2",
+      "feature_source": "shoulder_pitch",
+      "min_deg": -90.0,
+      "max_deg": 90.0,
+      "home_deg": 0.0,
+      "mapping": "delta",
+      "invert": false,
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_3",
+      "feature_source": "elbow_bend",
+      "min_deg": -120.0,
+      "max_deg": 120.0,
+      "home_deg": 0.0,
+      "mapping": "delta",
+      "invert": false,
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_4",
+      "feature_source": "forearm_roll",
+      "min_deg": -180.0,
+      "max_deg": 180.0,
+      "home_deg": 0.0,
+      "mapping": "delta",
+      "invert": false,
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_5",
+      "feature_source": "wrist_pitch",
+      "min_deg": -90.0,
+      "max_deg": 90.0,
+      "home_deg": 0.0,
+      "mapping": "delta",
+      "invert": false,
+      "gain": 1.0,
+      "offset": 0.0
+    },
+    {
+      "id": "motor_6",
+      "feature_source": "gripper",
+      "min_deg": 0.0,
+      "max_deg": 90.0,
+      "home_deg": 8.0,
+      "mapping": "range",
+      "invert": true,
+      "gain": 1.0,
+      "offset": 0.0
+    }
+  ],
+  "digital_twin": {
+    "link_lengths_m": [0.1, 0.12, 0.1, 0.08, 0.06, 0.05]
+  }
+}

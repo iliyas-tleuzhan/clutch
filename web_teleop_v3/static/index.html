@@ -1,0 +1,1282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clutch Web Teleop V3</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Unbounded:wght@700;900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090909;
+      --surface: #111111;
+      --surface-2: #0d0d0d;
+      --line: #262626;
+      --text: #f3f4f6;
+      --muted: #7f7f7f;
+      --ok: #6dfaaa;
+      --warn: #f59e0b;
+      --bad: #ff7b7b;
+      --blue: #6da9ff;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "Inter", sans-serif;
+      background: var(--bg);
+      overflow: hidden;
+    }
+    .app-header {
+      height: 64px;
+      border-bottom: 1px solid var(--line);
+      background: #0b0b0b;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 0 16px;
+    }
+    .logo {
+      text-decoration: none;
+      color: #fff;
+      font-family: "Unbounded", sans-serif;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    .header-meta { min-width: 0; }
+    .title {
+      font-family: "Unbounded", sans-serif;
+      font-size: 12px;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .badges {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .badge {
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      border: 1px solid #2b2b2b;
+      color: #a3a3a3;
+      background: rgba(22, 22, 22, 0.85);
+    }
+    .ok { border-color: rgba(109, 250, 170, 0.5); color: #9df8c7; }
+    .warn { border-color: rgba(245, 158, 11, 0.6); color: #ffcb72; }
+
+    .shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 420px;
+      gap: 12px;
+      padding: 12px;
+      height: calc(100vh - 64px);
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .stage {
+      position: relative;
+      min-height: 0;
+      background: #0a0a0a;
+    }
+    .v-label {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      z-index: 3;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-family: ui-monospace, monospace;
+    }
+    #viewer {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #090909;
+    }
+    .camera-dock {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      width: min(330px, 42vw);
+      z-index: 4;
+      border-radius: 12px;
+      border: 1px solid rgba(109, 250, 170, 0.24);
+      background: rgba(16, 20, 18, 0.82);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      box-shadow: 0 14px 48px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+    }
+    .camera-dock h3 {
+      margin: 0;
+      padding: 9px 10px;
+      font-family: "Unbounded", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 10px;
+      color: #90f6bb;
+      border-bottom: 1px solid rgba(109, 250, 170, 0.22);
+      background: rgba(7, 11, 9, 0.82);
+    }
+    #camera {
+      width: 100%;
+      display: block;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      background: #000;
+    }
+    .camera-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 10px 9px;
+      border-top: 1px solid rgba(109, 250, 170, 0.22);
+      background: rgba(7, 11, 9, 0.82);
+    }
+    .camera-actions button {
+      min-height: 28px;
+      padding: 4px 10px;
+      border-radius: 7px;
+      font-size: 11px;
+      font-family: "Unbounded", sans-serif;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border: 1px solid rgba(109, 250, 170, 0.28);
+      background: rgba(20, 30, 24, 0.82);
+      color: #c9f7dd;
+    }
+    .camera-actions button.active {
+      border-color: rgba(109, 250, 170, 0.75);
+      color: #e8fff3;
+      background: rgba(26, 48, 36, 0.96);
+    }
+    .camera-status {
+      margin-left: auto;
+      color: #97dcb8;
+      font-size: 10px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-family: "Unbounded", sans-serif;
+    }
+    .zoom-dock {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 4;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .zoom-dock button {
+      width: 34px;
+      min-height: 34px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      background: rgba(8, 8, 8, 0.62);
+      color: #e5e7eb;
+      font-family: "Unbounded", sans-serif;
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .zoom-dock button:hover {
+      border-color: rgba(255, 255, 255, 0.68);
+    }
+
+    .drawer {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface-2);
+    }
+    .drawer-block {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 12px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .drawer-block:last-child { border-bottom: none; }
+    .drawer h3 {
+      margin: 0 0 8px;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-family: "Unbounded", sans-serif;
+    }
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .controls .full { grid-column: 1 / -1; }
+    .controls label {
+      color: #9aa0a6;
+      font-size: 11px;
+      align-self: center;
+    }
+    select, button {
+      background: #121212;
+      color: #f3f4f6;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-family: "Inter", sans-serif;
+      min-height: 34px;
+    }
+    button { cursor: pointer; }
+    button:hover, select:hover {
+      border-color: #3a3a3a;
+    }
+    .controls button.active,
+    .adv-grid button.active {
+      border-color: rgba(109, 250, 170, 0.72);
+      color: #d8ffe9;
+      background: rgba(28, 46, 34, 0.95);
+    }
+    .row-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .drawer-scroll {
+      overflow: auto;
+      min-height: 0;
+      flex: 1;
+    }
+
+    .motor-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 8px;
+      background: #101010;
+    }
+    .name { font-size: 11px; color: #8b8b8b; }
+    .value {
+      margin-top: 3px;
+      font-size: 18px;
+      font-family: "Unbounded", sans-serif;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .bar {
+      margin-top: 8px;
+      height: 3px;
+      border-radius: 999px;
+      background: #2a2a2a;
+      overflow: hidden;
+    }
+    .fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #7de4a2, #6dfaaa);
+      transition: width 0.08s linear;
+    }
+    .guide { padding: 0; }
+    .howto {
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #101010;
+    }
+    .howto ol {
+      margin: 6px 0 0 18px;
+      padding: 0;
+    }
+    .howto li {
+      margin: 4px 0;
+      color: #c7d2df;
+      font-size: 13px;
+    }
+    .guide-item {
+      margin: 8px 0;
+      border-left: 3px solid var(--blue);
+      background: #101010;
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+    .guide-item strong { color: #9ecbff; }
+    .muted { font-size: 12px; color: var(--muted); }
+    .adv-tools {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #101010;
+      padding: 8px;
+      margin-top: 2px;
+    }
+    .adv-tools summary {
+      cursor: pointer;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #d6d6d6;
+      list-style: none;
+    }
+    .adv-tools summary::-webkit-details-marker {
+      display: none;
+    }
+    .adv-grid {
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .adv-grid .full {
+      grid-column: 1 / -1;
+    }
+    .adv-grid button,
+    .adv-grid select {
+      min-height: 30px;
+      padding: 6px 8px;
+      font-size: 11px;
+    }
+    .adv-diag {
+      margin-top: 8px;
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+    }
+
+    @media (max-width: 1180px) {
+      .shell {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(52vh, 1fr) auto;
+        height: calc(100vh - 64px);
+      }
+      .drawer {
+        max-height: 42vh;
+      }
+      .camera-dock {
+        width: min(280px, 45vw);
+      }
+    }
+    @media (max-width: 780px) {
+      .app-header {
+        height: auto;
+        padding: 10px 12px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .badges {
+        margin-left: 0;
+        justify-content: flex-start;
+      }
+      .controls {
+        grid-template-columns: 1fr;
+      }
+      .row-2 {
+        grid-template-columns: 1fr;
+      }
+      .motor-grid {
+        grid-template-columns: 1fr;
+      }
+      .camera-dock {
+        width: calc(100% - 24px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <a class="logo" href="/main">CLUTCH</a>
+    <div class="header-meta">
+      <div class="title">Clutch V3 - Dual-Arm Follow</div>
+      <div class="subtitle">Camera + 3D Twin - SO101 Teleoperation Demo</div>
+    </div>
+    <div class="badges">
+      <span id="poseBadge" class="badge">pose:false</span>
+      <span id="handBadge" class="badge">hand:false</span>
+      <span id="freezeBadge" class="badge">freeze:false</span>
+      <span id="estopBadge" class="badge">estop:false</span>
+      <span id="motionBadge" class="badge">motion:disarmed</span>
+      <span id="statusBadge" class="badge">status:booting</span>
+    </div>
+  </header>
+
+  <div class="shell">
+    <section class="panel stage">
+      <div class="v-label">3D Robot Twin + Human Arm Reference</div>
+      <canvas id="viewer"></canvas>
+      <div class="zoom-dock">
+        <button id="zoomInBtn" title="Zoom In">+</button>
+        <button id="zoomOutBtn" title="Zoom Out">-</button>
+      </div>
+      <div class="camera-dock">
+        <h3>Live Camera Feed</h3>
+        <img id="camera" alt="camera feed" />
+        <div class="camera-actions">
+          <button id="camToggleBtn" class="active">Stop</button>
+          <span id="camStatus" class="camera-status">Live</span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel drawer">
+      <div class="drawer-scroll">
+        <section class="drawer-block">
+          <h3>Controls</h3>
+          <div class="controls">
+            <label for="armSelect">Tracked Arm</label>
+            <select id="armSelect">
+              <option value="right">Right Arm</option>
+              <option value="left">Left Arm</option>
+            </select>
+            <button id="calibrateBtn">Calibrate Neutral Pose</button>
+            <button id="saveCalibBtn">Save Calibration JSON</button>
+            <button id="depthNeutralBtn">Depth Neutral</button>
+            <button id="depthNearBtn">Depth Near</button>
+            <button id="depthFarBtn">Depth Far</button>
+            <button id="depthResetBtn">Depth Reset</button>
+            <button id="freezeBtn">Freeze</button>
+            <button id="estopBtn">E-Stop</button>
+            <button id="homeBtn">Home</button>
+            <button id="resetBtn">Reset Robots</button>
+            <div class="row-2 full">
+              <button id="recStartBtn">Rec Start</button>
+              <button id="recStopBtn">Rec Stop</button>
+            </div>
+            <select id="trajSelect" class="full"></select>
+            <div class="row-2 full">
+              <button id="playBtn">Play</button>
+              <button id="stopPlayBtn">Stop Play</button>
+            </div>
+            <div class="full">
+              <details class="adv-tools" id="eeToolsBox">
+                <summary>EE / IK Tools (Optional)</summary>
+                <div class="adv-grid">
+                  <button id="debugBtn">Debug Off</button>
+                  <button id="armMotionBtn">Motion Disarmed</button>
+                  <button id="holdBtn">Hold-to-Enable</button>
+                  <button id="oneAxisBtn">One-Axis Off</button>
+                  <select id="axisSelect">
+                    <option value="0">Axis 1</option>
+                    <option value="1">Axis 2</option>
+                    <option value="2">Axis 3</option>
+                    <option value="3">Axis 4</option>
+                    <option value="4">Axis 5</option>
+                    <option value="5">Axis 6</option>
+                  </select>
+                  <button id="wfStartBtn">WF Start</button>
+                  <button id="wfStep1Btn">WF Step1</button>
+                  <button id="wfCapRobotBtn">WF Robot Neutral</button>
+                  <button id="wfCapHandBtn">WF Hand Neutral</button>
+                  <button id="wfTestXBtn">WF +X</button>
+                  <button id="wfTestYBtn">WF +Y</button>
+                  <button id="wfTestZBtn">WF +Z</button>
+                  <button id="wfSaveBtn">WF Save</button>
+                </div>
+                <div class="adv-diag">
+                  <div class="muted" id="eeDiagLine">ee: -</div>
+                  <div class="muted" id="eeReachLine">reach: -</div>
+                  <div class="muted" id="wfDiagLine">workflow: -</div>
+                </div>
+              </details>
+            </div>
+          </div>
+        </section>
+
+        <section class="drawer-block">
+          <h3>Motor Targets</h3>
+          <div class="motor-grid" id="motorGrid"></div>
+        </section>
+
+        <section class="drawer-block">
+          <h3>Guide: Which Body Motion Moves Which Joint</h3>
+          <div class="guide" id="guide"></div>
+          <div class="guide" id="wizardBox"></div>
+          <div class="guide" id="metricsBox"></div>
+        </section>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module">
+    import * as THREE from "https://esm.sh/three@0.160.0";
+    import { OrbitControls } from "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+    import URDFLoader from "https://esm.sh/urdf-loader@0.12.6?deps=three@0.160.0";
+
+    const canvas = document.getElementById("viewer");
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x090909);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.58));
+    const key = new THREE.DirectionalLight(0xffffff, 0.88);
+    key.position.set(2.6, 3.8, 2.4);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0xaaccff, 0.24);
+    fill.position.set(-2.2, 1.2, -1.8);
+    scene.add(fill);
+
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(5.0, 5.0),
+      new THREE.MeshStandardMaterial({ color: 0x171717, roughness: 0.9, metalness: 0.05 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = 0;
+    scene.add(floor);
+
+    const cam3 = new THREE.PerspectiveCamera(45, 1, 0.01, 40);
+    cam3.position.set(1.9, 1.45, 1.95);
+    const orbit = new OrbitControls(cam3, renderer.domElement);
+    orbit.enableDamping = true;
+    orbit.dampingFactor = 0.1;
+    orbit.enableZoom = true;
+    orbit.zoomSpeed = 8.5;
+    orbit.rotateSpeed = 1.0;
+    orbit.panSpeed = 1.05;
+    orbit.enablePan = false;
+    const baseFocus = new THREE.Vector3(0, 0.07, 0);
+    orbit.target.copy(baseFocus);
+
+    function dolly(scale) {
+      orbit.target.copy(baseFocus);
+      const dir = cam3.position.clone().sub(baseFocus);
+      dir.multiplyScalar(scale);
+      const dist = dir.length();
+      const clamped = Math.max(0.18, Math.min(6.5, dist));
+      dir.setLength(clamped);
+      cam3.position.copy(baseFocus.clone().add(dir));
+      cam3.updateProjectionMatrix();
+    }
+    const zoomInBtn = document.getElementById("zoomInBtn");
+    const zoomOutBtn = document.getElementById("zoomOutBtn");
+    if (zoomInBtn) zoomInBtn.addEventListener("click", () => dolly(0.86));
+    if (zoomOutBtn) zoomOutBtn.addEventListener("click", () => dolly(1.16));
+
+    const robots = { right: null, left: null };
+    const URDF_URL = "/assets/so101/so101_new_calib.urdf";
+    const loader = new URDFLoader();
+
+    function getArmOrientation(side) {
+      // Previous orientation setup.
+      if (side === "left") {
+        return { x: -Math.PI / 2, y: 0.0, z: 0.0 };
+      }
+      return { x: -Math.PI / 2, y: 0.0, z: Math.PI };
+    }
+
+    function loadRobot(side, xOffset) {
+      loader.load(
+        URDF_URL,
+        (r) => {
+          robots[side] = r;
+          const rot = getArmOrientation(side);
+          r.rotation.set(rot.x, rot.y, rot.z);
+          r.position.x = xOffset;
+          r.position.y = 0.0;
+          r.position.z = 0.0;
+          r.scale.set(1, 1, 1);
+          r.traverse((c) => {
+            if (c.isMesh) {
+              c.castShadow = true;
+              c.receiveShadow = true;
+            }
+          });
+          scene.add(r);
+          fitRobot();
+        },
+        undefined,
+        (err) => {
+          console.error(`SO101 URDF load failed (${side}):`, err);
+        }
+      );
+    }
+    loadRobot("left", -0.42);
+    loadRobot("right", 0.42);
+
+    function groundRobot(robot) {
+      if (!robot) return;
+      robot.updateMatrixWorld(true);
+      const b = new THREE.Box3().setFromObject(robot);
+      if (b.isEmpty()) return;
+      // Move robot so its lowest point sits on the floor plane (y=0).
+      robot.position.y += -b.min.y;
+      robot.updateMatrixWorld(true);
+    }
+
+    function fitRobot() {
+      const ready = [robots.left, robots.right].filter(Boolean);
+      if (!ready.length) return;
+      const group = new THREE.Group();
+      ready.forEach((r) => group.add(r.clone()));
+      const box = new THREE.Box3().setFromObject(group);
+      if (box.isEmpty()) return;
+      const center = new THREE.Vector3();
+      const size = new THREE.Vector3();
+      box.getCenter(center);
+      box.getSize(size);
+      const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
+      const targetSpan = 1.18;
+      ready.forEach((r) => {
+        r.scale.setScalar(targetSpan / maxDim);
+        groundRobot(r);
+      });
+      const finalBox = new THREE.Box3();
+      ready.forEach((r) => finalBox.expandByObject(r));
+      baseFocus.set(0, finalBox.min.y + 0.04, 0);
+      orbit.target.copy(baseFocus);
+      orbit.update();
+    }
+
+    function setJoint(robot, name, value) {
+      if (!robot || typeof robot.setJointValue !== "function") return;
+      try {
+        robot.setJointValue(name, value);
+      } catch (_) {
+        // ignored: missing joints in some URDF variants
+      }
+    }
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+    const twinSmoothedRight = [0, 0, 0, 0, 0, 0];
+    const twinSmoothedLeft = [0, 0, 0, 0, 0, 0];
+    const TWIN_RESPONSE = 0.82; // higher = faster visual response
+    function applyRobotPose(robot, smoothDeg) {
+      if (!robot) return;
+      const r = Math.PI / 180;
+      setJoint(robot, "shoulder_pan", smoothDeg[0] * r);
+      setJoint(robot, "shoulder_lift", smoothDeg[1] * r);
+      setJoint(robot, "elbow_flex", smoothDeg[2] * r);
+      // Match requested mapping: motor 4 = wrist flex, motor 5 = wrist roll.
+      setJoint(robot, "wrist_flex", smoothDeg[3] * r);
+      setJoint(robot, "wrist_roll", smoothDeg[4] * r);
+      const g = Math.max(0.0, Math.min(1.0, smoothDeg[5] / 90.0)); // 0=open, 1=closed
+      const grip = (1.20 * (1.0 - g)) + (-0.15 * g);
+      setJoint(robot, "gripper", grip);
+    }
+    // URDF joints driven directly from backend motor targets for both arms.
+    window.__updateRobotTwin = (rightDeg, leftDeg) => {
+      const useRight = Array.isArray(rightDeg) && rightDeg.length >= 6 ? rightDeg : null;
+      const useLeft = Array.isArray(leftDeg) && leftDeg.length >= 6 ? leftDeg : null;
+      if (!useRight && !useLeft) return;
+      for (let i = 0; i < 6; i++) {
+        const rr = useRight ? Number(useRight[i]) : twinSmoothedRight[i];
+        const ll = useLeft ? Number(useLeft[i]) : twinSmoothedLeft[i];
+        const rv = Number.isFinite(rr) ? rr : twinSmoothedRight[i];
+        const lv = Number.isFinite(ll) ? ll : twinSmoothedLeft[i];
+        twinSmoothedRight[i] = lerp(twinSmoothedRight[i], rv, TWIN_RESPONSE);
+        twinSmoothedLeft[i] = lerp(twinSmoothedLeft[i], lv, TWIN_RESPONSE);
+      }
+      applyRobotPose(robots.right, twinSmoothedRight);
+      applyRobotPose(robots.left, twinSmoothedLeft);
+    };
+
+    function resize() {
+      const r = canvas.getBoundingClientRect();
+      const w = Math.max(120, r.width);
+      const h = Math.max(120, r.height);
+      renderer.setSize(w, h, false);
+      cam3.aspect = w / h;
+      cam3.updateProjectionMatrix();
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    (function renderLoop() {
+      requestAnimationFrame(renderLoop);
+      orbit.target.copy(baseFocus);
+      orbit.update();
+      renderer.render(scene, cam3);
+    })();
+  </script>
+  <script>
+    const cameraEl = document.getElementById("camera");
+    const camToggleBtn = document.getElementById("camToggleBtn");
+    const camStatus = document.getElementById("camStatus");
+    const poseBadge = document.getElementById("poseBadge");
+    const handBadge = document.getElementById("handBadge");
+    const freezeBadge = document.getElementById("freezeBadge");
+    const estopBadge = document.getElementById("estopBadge");
+    const motionBadge = document.getElementById("motionBadge");
+    const statusBadge = document.getElementById("statusBadge");
+    const armSelect = document.getElementById("armSelect");
+    const calibrateBtn = document.getElementById("calibrateBtn");
+    const saveCalibBtn = document.getElementById("saveCalibBtn");
+    const depthNeutralBtn = document.getElementById("depthNeutralBtn");
+    const depthNearBtn = document.getElementById("depthNearBtn");
+    const depthFarBtn = document.getElementById("depthFarBtn");
+    const depthResetBtn = document.getElementById("depthResetBtn");
+    const freezeBtn = document.getElementById("freezeBtn");
+    const estopBtn = document.getElementById("estopBtn");
+    const homeBtn = document.getElementById("homeBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const recStartBtn = document.getElementById("recStartBtn");
+    const recStopBtn = document.getElementById("recStopBtn");
+    const playBtn = document.getElementById("playBtn");
+    const stopPlayBtn = document.getElementById("stopPlayBtn");
+    const debugBtn = document.getElementById("debugBtn");
+    const armMotionBtn = document.getElementById("armMotionBtn");
+    const holdBtn = document.getElementById("holdBtn");
+    const oneAxisBtn = document.getElementById("oneAxisBtn");
+    const axisSelect = document.getElementById("axisSelect");
+    const wfStartBtn = document.getElementById("wfStartBtn");
+    const wfStep1Btn = document.getElementById("wfStep1Btn");
+    const wfCapRobotBtn = document.getElementById("wfCapRobotBtn");
+    const wfCapHandBtn = document.getElementById("wfCapHandBtn");
+    const wfTestXBtn = document.getElementById("wfTestXBtn");
+    const wfTestYBtn = document.getElementById("wfTestYBtn");
+    const wfTestZBtn = document.getElementById("wfTestZBtn");
+    const wfSaveBtn = document.getElementById("wfSaveBtn");
+    const trajSelect = document.getElementById("trajSelect");
+    const motorGrid = document.getElementById("motorGrid");
+    const guideEl = document.getElementById("guide");
+    const wizardBox = document.getElementById("wizardBox");
+    const metricsBox = document.getElementById("metricsBox");
+    const eeDiagLine = document.getElementById("eeDiagLine");
+    const eeReachLine = document.getElementById("eeReachLine");
+    const wfDiagLine = document.getElementById("wfDiagLine");
+
+    const motorNames = ["Base", "Shoulder", "Elbow", "Wrist Flex", "Wrist Roll", "Gripper"];
+    let motorRanges = [[-160,160],[-90,90],[-120,120],[-180,180],[-90,90],[0,90]];
+    let lastMotors = [0,0,0,0,0,0];
+    let lastMotorsRight = [0,0,0,0,0,0];
+    let lastMotorsLeft = [0,0,0,0,0,0];
+    let lastWizard = null;
+    let cameraPaused = false;
+
+    function setBadge(el, text, ok) {
+      el.textContent = text;
+      el.classList.toggle("ok", !!ok);
+      el.classList.toggle("warn", !ok);
+    }
+
+    function setCameraLive(on) {
+      cameraPaused = !on;
+      if (camToggleBtn) {
+        camToggleBtn.textContent = on ? "Stop" : "Camera";
+        camToggleBtn.classList.toggle("active", !!on);
+      }
+      if (camStatus) camStatus.textContent = on ? "Live" : "Stopped";
+    }
+
+    function buildMotorCards() {
+      for (let i = 0; i < 6; i++) {
+        const c = document.createElement("div");
+        c.className = "card";
+        c.innerHTML = `
+          <div class="name">motor_${i+1} (${motorNames[i]})</div>
+          <div class="value" id="mval${i}">0.0 deg</div>
+          <div class="bar"><div class="fill" id="mfill${i}"></div></div>
+        `;
+        motorGrid.appendChild(c);
+      }
+    }
+
+    function updateMotorCards(m) {
+      for (let i = 0; i < 6; i++) {
+        const valEl = document.getElementById(`mval${i}`);
+        const fillEl = document.getElementById(`mfill${i}`);
+        valEl.textContent = `${m[i].toFixed(1)} deg`;
+        const [lo, hi] = motorRanges[i];
+        const pct = Math.max(0, Math.min(1, (m[i]-lo)/(hi-lo)));
+        fillEl.style.width = `${(pct*100).toFixed(1)}%`;
+      }
+    }
+
+    function renderGuide(guide) {
+      guideEl.innerHTML = "";
+      const howto = document.createElement("div");
+      howto.className = "howto";
+      howto.innerHTML = `
+        <strong>How To Operate (Stable Mode)</strong>
+        <ol>
+          <li>Stand 1-1.5m from camera with shoulders, elbows, wrists, and hands visible.</li>
+          <li>Each arm drives one robot: your right arm -> right robot, left arm -> left robot.</li>
+          <li>Overlay dots show key points: 2 shoulders, elbow, 2 wrists, thumb.</li>
+          <li>Hold neutral reach and click <em>Depth Neutral</em>.</li>
+          <li>Move hand close to camera and click <em>Depth Near</em>; move back and click <em>Depth Far</em>.</li>
+          <li>Then click <em>Calibrate Neutral Pose</em> and move naturally.</li>
+          <li>Finger motion controls gripper only; shoulder and elbow follow arm lines.</li>
+          <li>Use <em>Reset Robots</em> to return both arms to safe home instantly.</li>
+        </ol>
+      `;
+      guideEl.appendChild(howto);
+      (guide || []).forEach((g) => {
+        const div = document.createElement("div");
+        div.className = "guide-item";
+        div.innerHTML = `<strong>${g.motor} - ${g.name}</strong><div class="muted">${g.how}</div>`;
+        guideEl.appendChild(div);
+      });
+    }
+
+    function renderWizard(wizard) {
+      if (!wizard) return;
+      lastWizard = wizard;
+      wizardBox.innerHTML = `
+        <div class="howto">
+          <strong>Calibration Wizard</strong>
+          <div class="muted">Step ${wizard.step}/${wizard.total}</div>
+          <div style="margin-top:6px">${wizard.text}</div>
+          <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="wizPrevBtn">Prev</button>
+            <button id="wizNextBtn">Next</button>
+            <button id="wizResetBtn">Reset</button>
+          </div>
+        </div>
+      `;
+      document.getElementById("wizPrevBtn").onclick = () => setWizard("prev");
+      document.getElementById("wizNextBtn").onclick = () => setWizard("next");
+      document.getElementById("wizResetBtn").onclick = () => setWizard("reset");
+    }
+
+    function renderMetrics(metrics, quality, traj, macroEvent, safety, collisionBlocked, selectedArm, depthRight, depthLeft) {
+      metrics = metrics || {};
+      quality = quality || {};
+      traj = traj || {};
+      safety = safety || {};
+      const d = (selectedArm === "left" ? depthLeft : depthRight) || {};
+      const dNorm = (typeof d.norm === "number") ? d.norm.toFixed(3) : "-";
+      const dFwd = (typeof d.forward === "number") ? d.forward.toFixed(3) : "-";
+      metricsBox.innerHTML = `
+        <div class="howto">
+          <strong>Runtime Dashboard</strong>
+          <div class="muted">fps: ${metrics.fps ?? "-"} | proc_ms: ${metrics.proc_ms_avg ?? "-"} | pose_ratio: ${metrics.pose_valid_ratio ?? "-"}</div>
+          <div class="muted">jitter_deg: ${metrics.motor_jitter_avg_deg ?? "-"} | quality: ${metrics.quality_score_avg ?? "-"}</div>
+          <div class="muted">brightness: ${quality.brightness ? quality.brightness.toFixed(1) : "-"} | blur_var: ${quality.blur_var ? quality.blur_var.toFixed(1) : "-"}</div>
+          <div class="muted">recording: ${!!traj.recording} | playing: ${!!traj.playing} (${traj.play_name || "-"})</div>
+          <div class="muted">freeze:${!!safety.freeze} | estop:${!!safety.estop} | lost_count:${safety.lost_count ?? "-"}</div>
+          <div class="muted">collision_blocked: ${!!collisionBlocked}</div>
+          <div class="muted">depth_norm:${dNorm} | depth_forward:${dFwd}</div>
+          <div class="muted">macro: ${macroEvent || "-"}</div>
+        </div>
+      `;
+    }
+
+    function fmtVec3(v) {
+      if (!Array.isArray(v) || v.length !== 3) return "-";
+      return `${Number(v[0]).toFixed(3)}, ${Number(v[1]).toFixed(3)}, ${Number(v[2]).toFixed(3)}`;
+    }
+
+    function renderEEState(data) {
+      const err = (typeof data.ee_error_norm === "number") ? data.ee_error_norm.toFixed(4) : "-";
+      eeDiagLine.textContent = `ee_target:${fmtVec3(data.ee_target_xyz)} | fk:${fmtVec3(data.ee_fk_xyz)} | err:${err}`;
+      eeReachLine.textContent =
+        `ik_ok:${!!data.ik_ok} | reach:${!!data.target_reachable} | clamped:${!!data.target_clamped} | ` +
+        `joint_limit:${!!data.joint_limit_hit} | singularity:${!!data.singularity_warning}`;
+      const wf = data.calibration_workflow || {};
+      wfDiagLine.textContent = `workflow step:${wf.step ?? "-"} status:${wf.status || "-"} active:${!!wf.active}`;
+    }
+
+    function applyMotionUI(state) {
+      if (typeof state.debug_mode === "boolean") {
+        debugBtn.textContent = state.debug_mode ? "Debug On" : "Debug Off";
+        debugBtn.classList.toggle("active", !!state.debug_mode);
+      }
+      if (typeof state.enable_motion === "boolean") {
+        armMotionBtn.textContent = state.enable_motion ? "Motion Armed" : "Motion Disarmed";
+        armMotionBtn.classList.toggle("active", !!state.enable_motion);
+      }
+      if (typeof state.one_axis_mode === "boolean") {
+        oneAxisBtn.textContent = state.one_axis_mode ? "One-Axis On" : "One-Axis Off";
+        oneAxisBtn.classList.toggle("active", !!state.one_axis_mode);
+      }
+      if (typeof state.active_axis === "number") {
+        axisSelect.value = String(state.active_axis);
+      }
+      if (typeof state.hold_active === "boolean") {
+        holdBtn.classList.toggle("active", !!state.hold_active);
+      }
+    }
+
+    async function setMotionState(patch) {
+      try {
+        const r = await fetch("/api/motion", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        const d = await r.json();
+        if (d.ok) applyMotionUI(d);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function postWorkflow(action, axis = "") {
+      try {
+        const body = { action };
+        if (axis) body.axis = axis;
+        const r = await fetch("/api/calibration/workflow", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (d.ok) {
+          wfDiagLine.textContent = `workflow step:${d.workflow.step ?? "-"} status:${d.workflow.status || "-"} active:${!!d.workflow.active}`;
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function setWizard(action) {
+      try {
+        const r = await fetch("/api/wizard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action }),
+        });
+        const d = await r.json();
+        if (d.ok) renderWizard(d.wizard);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function refreshTrajectoryList() {
+      try {
+        const r = await fetch("/api/trajectory");
+        const d = await r.json();
+        const available = (d.trajectory && d.trajectory.available) || [];
+        const current = trajSelect.value;
+        trajSelect.innerHTML = "";
+        available.forEach((n) => {
+          const op = document.createElement("option");
+          op.value = n;
+          op.textContent = n;
+          trajSelect.appendChild(op);
+        });
+        if (available.length === 0) {
+          const op = document.createElement("option");
+          op.value = "";
+          op.textContent = "(no trajectories)";
+          trajSelect.appendChild(op);
+        }
+        if (available.includes(current)) trajSelect.value = current;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    armSelect.addEventListener("change", async () => {
+      try {
+        await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ selected_arm: armSelect.value }),
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    calibrateBtn.addEventListener("click", async () => {
+      try {
+        await fetch("/api/calibrate", { method: "POST" });
+        calibrateBtn.textContent = "Calibrating...";
+        setTimeout(() => (calibrateBtn.textContent = "Calibrate Neutral Pose"), 1200);
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    saveCalibBtn.addEventListener("click", async () => {
+      try {
+        const r = await fetch("/api/calibration/save", { method: "POST" });
+        const data = await r.json();
+        if (data.ok) {
+          saveCalibBtn.textContent = "Saved JSON";
+          setTimeout(() => (saveCalibBtn.textContent = "Save Calibration JSON"), 1200);
+        } else {
+          saveCalibBtn.textContent = "Save Failed";
+          setTimeout(() => (saveCalibBtn.textContent = "Save Calibration JSON"), 1200);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    async function depthCalibAction(action, btn) {
+      try {
+        await fetch("/api/depth_calibration", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, side: armSelect.value }),
+        });
+        if (btn) {
+          const old = btn.textContent;
+          btn.textContent = "Captured";
+          setTimeout(() => (btn.textContent = old), 900);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    if (depthNeutralBtn) depthNeutralBtn.addEventListener("click", () => depthCalibAction("capture_neutral", depthNeutralBtn));
+    if (depthNearBtn) depthNearBtn.addEventListener("click", () => depthCalibAction("capture_near", depthNearBtn));
+    if (depthFarBtn) depthFarBtn.addEventListener("click", () => depthCalibAction("capture_far", depthFarBtn));
+    if (depthResetBtn) depthResetBtn.addEventListener("click", () => depthCalibAction("reset", depthResetBtn));
+
+    freezeBtn.addEventListener("click", async () => {
+      await fetch("/api/safety", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "toggle_freeze" }),
+      });
+    });
+
+    estopBtn.addEventListener("click", async () => {
+      await fetch("/api/safety", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "toggle_estop" }),
+      });
+    });
+
+    homeBtn.addEventListener("click", async () => {
+      await fetch("/api/safety", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "home" }),
+      });
+    });
+
+    if (resetBtn) resetBtn.addEventListener("click", async () => {
+      await fetch("/api/reset", { method: "POST" });
+    });
+
+    recStartBtn.addEventListener("click", async () => {
+      const name = prompt("Trajectory name:", `traj_${Date.now()}`);
+      if (!name) return;
+      await fetch("/api/trajectory/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      await refreshTrajectoryList();
+    });
+
+    recStopBtn.addEventListener("click", async () => {
+      await fetch("/api/trajectory/stop", { method: "POST" });
+      await refreshTrajectoryList();
+    });
+
+    playBtn.addEventListener("click", async () => {
+      const name = trajSelect.value;
+      if (!name) return;
+      await fetch("/api/trajectory/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+    });
+
+    stopPlayBtn.addEventListener("click", async () => {
+      await fetch("/api/trajectory/stop_playback", { method: "POST" });
+    });
+
+    debugBtn.addEventListener("click", async () => {
+      const enable = !debugBtn.classList.contains("active");
+      try {
+        const r = await fetch("/api/debug", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: enable }),
+        });
+        const d = await r.json();
+        if (d.ok) applyMotionUI({ debug_mode: !!d.debug_mode });
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    armMotionBtn.addEventListener("click", async () => {
+      const enable = !armMotionBtn.classList.contains("active");
+      await setMotionState({ enable_motion: enable });
+    });
+
+    oneAxisBtn.addEventListener("click", async () => {
+      const enable = !oneAxisBtn.classList.contains("active");
+      await setMotionState({ one_axis_mode: enable });
+    });
+
+    axisSelect.addEventListener("change", async () => {
+      await setMotionState({ active_axis: parseInt(axisSelect.value, 10) || 0 });
+    });
+
+    let holdPulseTimer = null;
+    async function setHold(active) {
+      if (active) {
+        if (holdPulseTimer) return;
+        await setMotionState({ hold_active: true });
+        holdPulseTimer = setInterval(() => setMotionState({ hold_active: true }), 180);
+      } else {
+        if (holdPulseTimer) {
+          clearInterval(holdPulseTimer);
+          holdPulseTimer = null;
+        }
+        await setMotionState({ hold_active: false });
+      }
+    }
+    holdBtn.addEventListener("mousedown", () => setHold(true));
+    holdBtn.addEventListener("mouseup", () => setHold(false));
+    holdBtn.addEventListener("mouseleave", () => setHold(false));
+    holdBtn.addEventListener("touchstart", (e) => { e.preventDefault(); setHold(true); });
+    holdBtn.addEventListener("touchend", (e) => { e.preventDefault(); setHold(false); });
+
+    wfStartBtn.addEventListener("click", () => postWorkflow("start"));
+    wfStep1Btn.addEventListener("click", () => postWorkflow("step1_done"));
+    wfCapRobotBtn.addEventListener("click", () => postWorkflow("capture_robot_neutral"));
+    wfCapHandBtn.addEventListener("click", () => postWorkflow("capture_hand_neutral"));
+    wfTestXBtn.addEventListener("click", () => postWorkflow("test_axis", "x"));
+    wfTestYBtn.addEventListener("click", () => postWorkflow("test_axis", "y"));
+    wfTestZBtn.addEventListener("click", () => postWorkflow("test_axis", "z"));
+    wfSaveBtn.addEventListener("click", () => postWorkflow("save"));
+
+    if (camToggleBtn) camToggleBtn.addEventListener("click", () => setCameraLive(cameraPaused));
+
+    async function initSettings() {
+      try {
+        const r = await fetch("/api/settings");
+        const s = await r.json();
+        if (s.selected_arm) armSelect.value = s.selected_arm;
+        applyMotionUI(s);
+        if (s.calibration_workflow) {
+          wfDiagLine.textContent =
+            `workflow step:${s.calibration_workflow.step ?? "-"} ` +
+            `status:${s.calibration_workflow.status || "-"} active:${!!s.calibration_workflow.active}`;
+        }
+        if (Array.isArray(s.motor_ranges) && s.motor_ranges.length === 6) {
+          motorRanges = s.motor_ranges.map((pair, i) => {
+            if (!Array.isArray(pair) || pair.length < 2) return motorRanges[i];
+            const lo = Number(pair[0]);
+            const hi = Number(pair[1]);
+            if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo === hi) return motorRanges[i];
+            return [Math.min(lo, hi), Math.max(lo, hi)];
+          });
+        }
+        if (s.wizard_step && Array.isArray(s.wizard_steps)) {
+          renderWizard({
+            step: s.wizard_step,
+            total: s.wizard_steps.length,
+            text: s.wizard_steps[s.wizard_step - 1],
+          });
+        } else {
+          const wr = await fetch("/api/wizard");
+          const wd = await wr.json();
+          if (wd.ok) renderWizard(wd.wizard);
+        }
+        await refreshTrajectoryList();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    const wsProto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${wsProto}://${location.host}/ws`);
+    ws.onmessage = (ev) => {
+      const data = JSON.parse(ev.data);
+      if (!cameraPaused && data.frame_b64) cameraEl.src = `data:image/jpeg;base64,${data.frame_b64}`;
+      if (Array.isArray(data.motors_right_deg) && data.motors_right_deg.length === 6) {
+        lastMotorsRight = data.motors_right_deg.map((v) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : 0;
+        });
+      }
+      if (Array.isArray(data.motors_left_deg) && data.motors_left_deg.length === 6) {
+        lastMotorsLeft = data.motors_left_deg.map((v) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : 0;
+        });
+      }
+      if (Array.isArray(data.motors_deg) && data.motors_deg.length === 6) {
+        lastMotors = data.motors_deg.map((v) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : 0;
+        });
+        updateMotorCards(lastMotors);
+      } else {
+        const fallback = [];
+        for (let i = 1; i <= 6; i++) {
+          const n = Number(data[`motor_${i}`]);
+          fallback.push(Number.isFinite(n) ? n : 0);
+        }
+        if (fallback.some((v) => v !== 0)) {
+          lastMotors = fallback;
+          updateMotorCards(lastMotors);
+        }
+      }
+      if (data.selected_arm && armSelect.value !== data.selected_arm) armSelect.value = data.selected_arm;
+      setBadge(poseBadge, `pose:${!!data.pose_detected}`, !!data.pose_detected);
+      setBadge(handBadge, `hand:${!!data.hand_detected}`, !!data.hand_detected);
+      setBadge(freezeBadge, `freeze:${!!(data.safety && data.safety.freeze)}`, !!(data.safety && data.safety.freeze));
+      setBadge(estopBadge, `estop:${!!(data.safety && data.safety.estop)}`, !!(data.safety && data.safety.estop));
+      setBadge(motionBadge, `motion:${data.motion_armed ? "armed" : "disarmed"}`, !!data.motion_armed);
+      statusBadge.textContent = `status:${data.status || "unknown"}`;
+      applyMotionUI(data);
+      renderMetrics(
+        data.metrics,
+        data.quality,
+        data.trajectory,
+        data.macro_event,
+        data.safety,
+        data.collision_blocked,
+        data.selected_arm || armSelect.value,
+        data.depth_right,
+        data.depth_left
+      );
+      renderEEState(data);
+      if (data.wizard_step && lastWizard && data.wizard_step !== lastWizard.step) {
+        // keep wizard in sync if changed elsewhere
+        setWizard(`goto:${data.wizard_step}`);
+      }
+      if (Array.isArray(data.guide) && guideEl.children.length === 0) renderGuide(data.guide);
+    };
+    ws.onclose = () => setBadge(statusBadge, "status:disconnected", false);
+
+    // ===== 3D twin bridge (actual renderer/model is in module script above) =====
+    function animateTwinBridge() {
+      requestAnimationFrame(animateTwinBridge);
+      if (typeof window.__updateRobotTwin === "function") {
+        window.__updateRobotTwin(lastMotorsRight, lastMotorsLeft);
+      }
+    }
+    animateTwinBridge();
+
+    buildMotorCards();
+    setCameraLive(true);
+    initSettings();
+    fetch("/api/guide").then(r => r.json()).then(d => renderGuide(d.guide)).catch(() => {});
+    setInterval(refreshTrajectoryList, 5000);
+  </script>
+</body>
+</html>

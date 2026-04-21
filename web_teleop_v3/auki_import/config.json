@@ -1,0 +1,18 @@
+{
+  "smoothing_alpha": 0.12,
+  "link_lengths": [0.1, 0.12, 0.1, 0.08, 0.06, 0.05],
+  "safety": {
+    "max_vel_deg_s": [140, 140, 180, 220, 220, 200],
+    "max_accel_deg_s2": [700, 700, 900, 1100, 1100, 800],
+    "hand_command_timeout_ms": 420,
+    "dt_cap_s": 0.12
+  },
+  "motors": [
+    {"min": -70,  "max": 70,  "home": 0,  "label": "Base Yaw"},
+    {"min": -55,  "max": 80,  "home": 0,  "label": "Shoulder"},
+    {"min": -100, "max": 100, "home": 0,  "label": "Elbow"},
+    {"min": -120, "max": 120, "home": 0,  "label": "Forearm Roll"},
+    {"min": -90,  "max": 90,  "home": 0,  "label": "Wrist Pitch"},
+    {"min": 0,    "max": 90,  "home": 5,  "label": "Gripper"}
+  ]
+}
