@@ -52,7 +52,7 @@
     },
     "gripper_motor": {
       "open_deg": 8.0,
-      "closed_deg": 78.0
+      "closed_deg": 65.0
     }
   },
   "ik_solver": {

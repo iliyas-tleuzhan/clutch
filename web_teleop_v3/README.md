@@ -1,4 +1,7 @@
 # Web Teleop V3 (Phase 1: XYZ + Gripper)
+<p align="center">
+  <img src="assets/demo_ee.gif" width="500">
+</p>
 
 This path now runs Cartesian end-effector teleoperation:
 
