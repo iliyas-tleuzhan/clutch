@@ -1,4 +1,7 @@
 # Clutch: Laptop Teleop Vertical Slice (SO101)
+<p align="center">
+  <img src="media\videos\demo_clutch.gif" width="900">
+</p>
 
 Primary path is now **Web Teleop V3** with end-effector control.
 
